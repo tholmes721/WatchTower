@@ -1005,14 +1005,9 @@ function showGlobalAlert(type, msg) {
 
 // ── Utility / formatting ──────────────────────────────────────────────────
 function pduWebUrl(dashboardItem) {
-  // Look up the full PDU config to get protocol and port
-  const pdu = state.pdus.find(p => p.id === dashboardItem.pdu_config_id);
-  const scheme = pdu && pdu.use_https === false ? 'http' : 'https';
-  const port = pdu ? pdu.port : 443;
-  const host = dashboardItem.host;
-  // Omit port if it's the default for the scheme
-  const showPort = (scheme === 'https' && port !== 443) || (scheme === 'http' && port !== 80);
-  return `${scheme}://${host}${showPort ? ':' + port : ''}`;
+  // Raritan PDU web interface is always https://<ip>
+  // Use the IP address directly (not DNS) for airgapped environments
+  return `https://${dashboardItem.host}`;
 }
 
 function esc(str) {
