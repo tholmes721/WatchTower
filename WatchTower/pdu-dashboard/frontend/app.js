@@ -982,9 +982,17 @@ function severityIcon(sev) {
 
 function voltClass(v) {
   if (v == null || v === 0) return 'val-dim';
-  // nominal ~208V ±10%
-  if (v < 187 || v > 229) return 'val-crit';
-  if (v < 197 || v > 219) return 'val-warn';
+  // Auto-detect voltage tier and apply ±10% tolerance
+  let nominal;
+  if (v >= 90 && v <= 145) nominal = 120;
+  else if (v >= 175 && v <= 225) nominal = 208;
+  else if (v >= 215 && v <= 265) nominal = 230;
+  else return 'val-crit'; // doesn't fit any known tier
+
+  const low  = nominal * 0.90;
+  const high = nominal * 1.10;
+  if (v < low * 0.95 || v > high * 1.05) return 'val-crit';
+  if (v < low || v > high) return 'val-warn';
   return 'val-ok';
 }
 
