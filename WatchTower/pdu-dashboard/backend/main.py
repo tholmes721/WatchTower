@@ -364,7 +364,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
             if "current_ampere" in t:
                 total_current = t["current_ampere"]
 
-        from .parser import ParsedSnapshot, ALL_METRIC_FAMILIES, _infer_families
+        from .parser import ParsedSnapshot, CORE_METRIC_FAMILIES, _infer_families
         ps = ParsedSnapshot(
             pdu_id=snap.pdu_id,
             pdu_name=snap.pdu_name,
@@ -385,7 +385,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
         alerts = analyse(ps)
         critical = sum(1 for a in alerts if a.severity == "critical")
         warning  = sum(1 for a in alerts if a.severity == "warning")
-        missing  = sorted(ALL_METRIC_FAMILIES - ps.exported_families)
+        missing  = sorted(CORE_METRIC_FAMILIES - ps.exported_families)
 
         summaries.append(PDUDashboardSummary(
             pdu_config_id=pdu.id,
@@ -404,8 +404,8 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
             alert_count_critical=critical,
             alert_count_warning=warning,
             alerts=alerts,
-            exported_family_count=len(ps.exported_families),
-            total_family_count=len(ALL_METRIC_FAMILIES),
+            exported_family_count=len(ps.exported_families & CORE_METRIC_FAMILIES),
+            total_family_count=len(CORE_METRIC_FAMILIES),
             missing_families=missing,
         ))
 
@@ -512,9 +512,9 @@ async def _get_pdu_or_404(pdu_id: int, db: AsyncSession) -> PDUConfigModel:
 
 
 def _snapshot_to_detail(snap: Snapshot) -> SnapshotDetail:
-    from .parser import ALL_METRIC_FAMILIES
+    from .parser import CORE_METRIC_FAMILIES
     exported = snap.exported_families
-    missing  = sorted(ALL_METRIC_FAMILIES - set(exported))
+    missing  = sorted(CORE_METRIC_FAMILIES - set(exported))
     return SnapshotDetail(
         id=snap.id,
         pdu_config_id=snap.pdu_config_id,

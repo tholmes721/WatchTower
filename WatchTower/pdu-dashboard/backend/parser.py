@@ -13,7 +13,10 @@ from typing import Optional, Set
 
 
 # ── Full metric catalogue — all known raritan_pdu_* families ────────────────
-ALL_METRIC_FAMILIES: Set[str] = {
+# Split into core (always expected on the PDU itself) and peripheral
+# (only present when optional environmental sensors are attached).
+
+CORE_METRIC_FAMILIES: Set[str] = {
     "activeenergy_watthour_total",
     "activepower_watt",
     "apparentenergy_voltamperehour_total",
@@ -33,6 +36,9 @@ ALL_METRIC_FAMILIES: Set[str] = {
     "voltage_volt",
     "voltageln_volt",
     "voltagethd_percent",
+}
+
+PERIPHERAL_METRIC_FAMILIES: Set[str] = {
     "peripheral_temperature_degreecelsius",
     "peripheral_relativehumidity_percent",
     "peripheral_dewpoint_degreecelsius",
@@ -40,6 +46,9 @@ ALL_METRIC_FAMILIES: Set[str] = {
     "peripheral_airflow_meterpersecond",
     "peripheral_airpressure_pascal",
 }
+
+# Combined set for inference and general lookups
+ALL_METRIC_FAMILIES: Set[str] = CORE_METRIC_FAMILIES | PERIPHERAL_METRIC_FAMILIES
 
 # Regex to parse a Prometheus metric line
 # Matches: metric_name{label="val", ...} value [timestamp]
