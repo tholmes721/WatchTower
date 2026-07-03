@@ -364,7 +364,7 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
             if "current_ampere" in t:
                 total_current = t["current_ampere"]
 
-        from .parser import ParsedSnapshot, ALL_METRIC_FAMILIES
+        from .parser import ParsedSnapshot, ALL_METRIC_FAMILIES, _infer_families
         ps = ParsedSnapshot(
             pdu_id=snap.pdu_id,
             pdu_name=snap.pdu_name,
@@ -377,6 +377,11 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
             peripheral_metrics=snap.peripheral_metrics,
             exported_families=set(snap.exported_families),
         )
+        # If exported_families is empty (legacy snapshots or missing # TYPE lines),
+        # infer from the actual metric data so alerts are not suppressed
+        if not ps.exported_families:
+            ps.exported_families = _infer_families(ps)
+
         alerts = analyse(ps)
         critical = sum(1 for a in alerts if a.severity == "critical")
         warning  = sum(1 for a in alerts if a.severity == "warning")
@@ -421,7 +426,7 @@ async def get_analysis(pdu_id: int, db: AsyncSession = Depends(get_db)):
     if snap is None:
         return {"alerts": []}
 
-    from .parser import ParsedSnapshot
+    from .parser import ParsedSnapshot, _infer_families
     ps = ParsedSnapshot(
         pdu_id=snap.pdu_id,
         pdu_name=snap.pdu_name,
@@ -429,7 +434,11 @@ async def get_analysis(pdu_id: int, db: AsyncSession = Depends(get_db)):
         outlet_metrics=snap.outlet_metrics,
         ocp_metrics=snap.ocp_metrics,
         peripheral_metrics=snap.peripheral_metrics,
+        exported_families=set(snap.exported_families),
     )
+    # If exported_families is empty, infer from actual data
+    if not ps.exported_families:
+        ps.exported_families = _infer_families(ps)
     return {"alerts": analyse(ps)}
 
 

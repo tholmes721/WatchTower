@@ -213,7 +213,59 @@ def parse_prometheus_text(text: str) -> ParsedSnapshot:
         # ── Fallback ─────────────────────────────────────────────────────────
         snapshot.other_samples.append(sample)
 
+    # ── Infer exported families from parsed data ────────────────────────────
+    # If no # TYPE lines were present (some PDU configs strip comments, or
+    # the export uses a non-standard format), infer which families are available
+    # from the actual metric keys that were successfully parsed.
+    # This ensures the analysis engine doesn't suppress all alerts just because
+    # TYPE declarations were missing.
+    if not snapshot.exported_families:
+        snapshot.exported_families = _infer_families(snapshot)
+
     return snapshot
+
+
+def _infer_families(snapshot: 'ParsedSnapshot') -> set:
+    """
+    Infer exported metric families from the actual data present in a snapshot.
+    Scans inlet, outlet, OCP, and peripheral metrics for known family keys.
+    """
+    found = set()
+
+    # Check inlet metrics
+    for inlet in snapshot.inlet_metrics.values():
+        totals = inlet.get("total", {})
+        for key in totals:
+            if key in ALL_METRIC_FAMILIES:
+                found.add(key)
+        for phase_data in inlet.get("phases", {}).values():
+            for key in phase_data:
+                if key in ALL_METRIC_FAMILIES:
+                    found.add(key)
+        for lp_data in inlet.get("linepairs", {}).values():
+            for key in lp_data:
+                if key in ALL_METRIC_FAMILIES:
+                    found.add(key)
+
+    # Check outlet metrics
+    for outlet in snapshot.outlet_metrics.values():
+        for key in outlet:
+            if key in ALL_METRIC_FAMILIES:
+                found.add(key)
+
+    # Check OCP metrics
+    for ocp in snapshot.ocp_metrics.values():
+        for key in ocp:
+            if key in ALL_METRIC_FAMILIES:
+                found.add(key)
+
+    # Check peripheral metrics
+    for sensor in snapshot.peripheral_metrics.values():
+        for key in sensor:
+            if key in ALL_METRIC_FAMILIES:
+                found.add(key)
+
+    return found
 
 
 def _strip_prefix(name: str) -> str:
