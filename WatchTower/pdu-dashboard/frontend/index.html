@@ -40,7 +40,10 @@
 
     <!-- Dashboard toolbar -->
     <div class="dash-toolbar">
-      <input type="text" id="dash-search" class="dash-search" placeholder="Search by name, model, serial, or firmware…" />
+      <div class="dash-search-wrap">
+        <input type="text" id="dash-search" class="dash-search" placeholder="Search by name, model, serial, or firmware…" />
+        <button type="button" id="dash-search-clear" class="dash-search-clear hidden" title="Clear search">✕</button>
+      </div>
       <div class="dash-filter-pills">
         <button class="pill active" data-filter="all">All</button>
         <button class="pill" data-filter="critical">Critical</button>

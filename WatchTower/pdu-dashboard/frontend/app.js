@@ -722,14 +722,30 @@ function bindHeaderButtons() {
 // ── Dashboard search & filter ─────────────────────────────────────────────
 function bindDashboardSearch() {
   const search = document.getElementById('dash-search');
+  const clearBtn = document.getElementById('dash-search-clear');
   let debounce;
+
+  // Show/hide the X button based on whether there's text
+  function updateClearBtn() {
+    clearBtn.classList.toggle('hidden', search.value.length === 0);
+  }
+
   search.addEventListener('input', () => {
+    updateClearBtn();
     clearTimeout(debounce);
     debounce = setTimeout(renderDashboard, 150);
   });
   // Clear on Escape
   search.addEventListener('keydown', e => {
-    if (e.key === 'Escape') { search.value = ''; renderDashboard(); }
+    if (e.key === 'Escape') { search.value = ''; updateClearBtn(); renderDashboard(); }
+  });
+
+  // Clear button click
+  clearBtn.addEventListener('click', () => {
+    search.value = '';
+    updateClearBtn();
+    search.focus();
+    renderDashboard();
   });
 
   document.querySelectorAll('.pill').forEach(pill => {
@@ -743,6 +759,7 @@ function bindDashboardSearch() {
 
 function clearDashSearch() {
   document.getElementById('dash-search').value = '';
+  document.getElementById('dash-search-clear').classList.add('hidden');
   document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
   document.querySelector('.pill[data-filter="all"]').classList.add('active');
   renderDashboard();
