@@ -248,7 +248,7 @@ function renderOutletTable() {
   let rows = Object.entries(snap.outlet_metrics)
     .sort((a,b) => +a[0] - +b[0])
     .filter(([id, o]) => {
-      if (activeOnly && o.outletstate !== 1) return false;
+      if (activeOnly && !(o.outletstate === 1 && o.activepower_watt > 0)) return false;
       const name = (o.outletname || '').toLowerCase();
       return !searchVal || id.includes(searchVal) || name.includes(searchVal);
     });
@@ -260,6 +260,7 @@ function renderOutletTable() {
   const tbody = document.getElementById('outlet-tbody');
   tbody.innerHTML = rows.map(([id, o]) => {
     const state_on = o.outletstate === 1;
+    const is_active = state_on && (o.activepower_watt > 0);
     const pf = o.powerfactor ?? o.displacementpowerfactor;
     const thd = o.currentthd_percent;
     const energy_kwh = o.activeenergy_watthour_total != null
@@ -268,7 +269,7 @@ function renderOutletTable() {
     return `<tr>
       <td>${id}</td>
       <td>${o.outletname ? esc(o.outletname) : '<span class="outlet-name-empty">unnamed</span>'}</td>
-      <td class="${state_on ? 'state-on' : 'state-off'}">${state_on ? 'ON' : 'OFF'}</td>
+      <td class="${is_active ? 'state-on' : state_on ? 'val-dim' : 'state-off'}">${is_active ? 'ON' : state_on ? 'ON (idle)' : 'OFF'}</td>
       <td class="${voltClass(o.voltage_volt)}">${fmt(o.voltage_volt, 1, 'V')}</td>
       <td>${fmt(o.current_ampere, 2, 'A')}</td>
       <td>${fmt(o.activepower_watt, 1, 'W')}</td>

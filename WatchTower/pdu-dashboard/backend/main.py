@@ -291,8 +291,13 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
 
         outlets = snap.outlet_metrics
         outlet_count = len(outlets)
+        # An outlet is "active" if it's switched on AND actually drawing power.
+        # outletstate == 1 just means the switch is on — many outlets are on
+        # but idle (0W, 0A) with nothing plugged in or device powered off.
         active_outlet_count = sum(
-            1 for o in outlets.values() if o.get("outletstate") == 1
+            1 for o in outlets.values()
+            if o.get("outletstate") in (1, 1.0)
+            and o.get("activepower_watt", 0) > 0
         )
 
         # Inlet totals
