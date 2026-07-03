@@ -19,6 +19,8 @@ from .analysis import analyse
 from .database import AsyncSessionLocal, PDUConfig as PDUConfigModel, Snapshot, get_db, init_db
 from .models import (
     BulkCredentialUpdate,
+    BulkPDUAdd,
+    BulkPDUAddResponse,
     PDUConfigCreate,
     PDUConfigResponse,
     PDUConfigUpdate,
@@ -128,6 +130,54 @@ async def bulk_update_credentials(payload: BulkCredentialUpdate, db: AsyncSessio
     for pdu in updated:
         await db.refresh(pdu)
     return updated
+
+
+@app.post("/api/pdus/bulk-add", response_model=BulkPDUAddResponse, status_code=201)
+async def bulk_add_pdus(payload: BulkPDUAdd, db: AsyncSession = Depends(get_db)):
+    """
+    Add multiple PDUs at once from a list of IP addresses/hostnames.
+    Shared credentials and settings are applied to all entries.
+    Hosts that already exist (by host+port) are skipped.
+    """
+    created = []
+    skipped = []
+
+    for host in payload.hosts:
+        host = host.strip()
+        if not host:
+            continue
+
+        # Check if this host+port already exists
+        result = await db.execute(
+            select(PDUConfigModel).where(
+                PDUConfigModel.host == host,
+                PDUConfigModel.port == payload.port,
+            )
+        )
+        existing = result.scalar_one_or_none()
+        if existing:
+            skipped.append(host)
+            continue
+
+        pdu = PDUConfigModel(
+            name=host,
+            host=host,
+            port=payload.port,
+            use_https=payload.use_https,
+            username=payload.username,
+            password=payload.password,
+            poll_interval_seconds=payload.poll_interval_seconds,
+            polling_enabled=payload.polling_enabled,
+        )
+        db.add(pdu)
+        created.append(pdu)
+
+    await db.commit()
+    for pdu in created:
+        await db.refresh(pdu)
+        schedule_pdu(pdu)
+
+    return BulkPDUAddResponse(created=created, skipped=skipped)
 
 
 @app.post("/api/pdus/{pdu_id}/poll-now", status_code=202)

@@ -714,6 +714,7 @@ function bindModalClose() {
 function bindHeaderButtons() {
   document.getElementById('btn-upload').addEventListener('click', openUploadModal);
   document.getElementById('btn-add-pdu').addEventListener('click', openAddPduModal);
+  document.getElementById('btn-bulk-add').addEventListener('click', openBulkAddModal);
   document.getElementById('btn-bulk-creds').addEventListener('click', openBulkCredsModal);
   document.getElementById('btn-refresh').addEventListener('click', loadDashboard);
 }
@@ -812,11 +813,58 @@ function openBulkCredsModal() {
 }
 
 
+// ── Bulk add PDUs modal ───────────────────────────────────────────────────
+function openBulkAddModal() {
+  document.getElementById('form-bulk-add').reset();
+  document.getElementById('bulk-add-port').value = '443';
+  document.getElementById('bulk-add-interval').value = '300';
+  document.getElementById('bulk-add-https').value = 'true';
+  openModal('modal-bulk-add');
+}
+
+async function handleBulkAdd(e) {
+  e.preventDefault();
+  const rawText = document.getElementById('bulk-add-hosts').value;
+  const hosts = rawText.split('\n').map(h => h.trim()).filter(h => h.length > 0);
+
+  if (hosts.length === 0) {
+    showGlobalAlert('error', 'Enter at least one IP address or hostname.');
+    return;
+  }
+
+  const payload = {
+    hosts,
+    port:                  parseInt(document.getElementById('bulk-add-port').value),
+    use_https:             document.getElementById('bulk-add-https').value === 'true',
+    username:              document.getElementById('bulk-add-username').value.trim() || null,
+    password:              document.getElementById('bulk-add-password').value || null,
+    poll_interval_seconds: parseInt(document.getElementById('bulk-add-interval').value),
+    polling_enabled:       document.getElementById('bulk-add-polling').checked,
+  };
+
+  try {
+    setButtonLoading(e.submitter, true);
+    const result = await api('POST', '/pdus/bulk-add', payload);
+    closeAllModals();
+    const parts = [];
+    if (result.created.length) parts.push(`${result.created.length} PDU(s) added`);
+    if (result.skipped.length) parts.push(`${result.skipped.length} skipped (already exist)`);
+    showGlobalAlert('success', parts.join(' · ') || 'No changes made.');
+    await loadDashboard();
+  } catch (err) {
+    showGlobalAlert('error', 'Bulk add failed: ' + err.message);
+  } finally {
+    setButtonLoading(e.submitter, false);
+  }
+}
+
+
 // ── Form submissions ──────────────────────────────────────────────────────
 function bindFormSubmits() {
   document.getElementById('form-upload').addEventListener('submit', handleUpload);
   document.getElementById('form-pdu').addEventListener('submit', handleSavePdu);
   document.getElementById('form-bulk').addEventListener('submit', handleBulkCreds);
+  document.getElementById('form-bulk-add').addEventListener('submit', handleBulkAdd);
   document.getElementById('btn-confirm-delete-pdu').addEventListener('click', confirmDeletePdu);
 }
 

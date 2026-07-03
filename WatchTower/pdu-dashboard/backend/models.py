@@ -65,6 +65,23 @@ class BulkCredentialUpdate(BaseModel):
     polling_enabled: Optional[bool] = None
 
 
+class BulkPDUAdd(BaseModel):
+    """Add multiple PDUs at once from a list of IP addresses with shared settings."""
+    hosts: List[str]  # List of IP addresses or hostnames
+    port: int = 443
+    use_https: bool = True
+    username: Optional[str] = None
+    password: Optional[str] = None
+    poll_interval_seconds: int = 300
+    polling_enabled: bool = False
+
+
+class BulkPDUAddResponse(BaseModel):
+    """Response for bulk add — reports created and skipped entries."""
+    created: List[PDUConfigResponse]
+    skipped: List[str]  # hosts that already existed
+
+
 # ── Snapshots ────────────────────────────────────────────────────────────────
 
 class SnapshotSummary(BaseModel):
