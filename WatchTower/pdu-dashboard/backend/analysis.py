@@ -44,8 +44,20 @@ CURRENT_HIGH_CRITICAL_PCT = 90.0
 
 NEUTRAL_CURRENT_WARNING_A = 5.0
 
-TEMP_WARNING_C    = 35.0
-TEMP_CRITICAL_C   = 40.0
+# Temperature thresholds (defined in °F, converted to °C for sensor comparison)
+# Warning: below 60°F or above 89°F
+# Critical: below 55°F or above 95°F
+TEMP_HIGH_WARNING_F   = 89.0
+TEMP_HIGH_CRITICAL_F  = 95.0
+TEMP_LOW_WARNING_F    = 60.0
+TEMP_LOW_CRITICAL_F   = 55.0
+
+# Sensors report in °C — pre-convert thresholds
+TEMP_HIGH_WARNING_C   = (TEMP_HIGH_WARNING_F - 32) * 5 / 9     # ~31.7°C
+TEMP_HIGH_CRITICAL_C  = (TEMP_HIGH_CRITICAL_F - 32) * 5 / 9    # ~35.0°C
+TEMP_LOW_WARNING_C    = (TEMP_LOW_WARNING_F - 32) * 5 / 9      # ~15.6°C
+TEMP_LOW_CRITICAL_C   = (TEMP_LOW_CRITICAL_F - 32) * 5 / 9     # ~12.8°C
+
 HUMIDITY_WARNING  = 70.0
 HUMIDITY_CRITICAL = 80.0
 # ─────────────────────────────────────────────────────────────────────────────
@@ -364,21 +376,41 @@ def _check_environmental(snapshot: ParsedSnapshot, alerts: List[AlertItem]):
         if has_temp:
             temp = sensor.get("peripheral_temperature_degreecelsius")
             if temp is not None:
-                if temp >= TEMP_CRITICAL_C:
+                severity = None
+                category = None
+                # Check high temperature
+                if temp >= TEMP_HIGH_CRITICAL_C:
                     severity = "critical"
-                elif temp >= TEMP_WARNING_C:
+                    category = "high_temperature"
+                    threshold_c = TEMP_HIGH_CRITICAL_C
+                    threshold_f = TEMP_HIGH_CRITICAL_F
+                elif temp >= TEMP_HIGH_WARNING_C:
                     severity = "warning"
-                else:
-                    severity = None
+                    category = "high_temperature"
+                    threshold_c = TEMP_HIGH_WARNING_C
+                    threshold_f = TEMP_HIGH_WARNING_F
+                # Check low temperature
+                elif temp <= TEMP_LOW_CRITICAL_C:
+                    severity = "critical"
+                    category = "low_temperature"
+                    threshold_c = TEMP_LOW_CRITICAL_C
+                    threshold_f = TEMP_LOW_CRITICAL_F
+                elif temp <= TEMP_LOW_WARNING_C:
+                    severity = "warning"
+                    category = "low_temperature"
+                    threshold_c = TEMP_LOW_WARNING_C
+                    threshold_f = TEMP_LOW_WARNING_F
+
                 if severity:
-                    threshold = TEMP_CRITICAL_C if severity == "critical" else TEMP_WARNING_C
+                    temp_f = temp * 9 / 5 + 32
+                    title_prefix = "High" if category == "high_temperature" else "Low"
                     alerts.append(AlertItem(
                         severity=severity,
-                        category="high_temperature",
-                        title=f"High temperature: {sensor.get('sensorname', 'Sensor ' + slot)}",
-                        detail=f"Temperature = {temp:.1f}°C (threshold: {threshold}°C)",
-                        value=temp,
-                        threshold=threshold,
+                        category=category,
+                        title=f"{title_prefix} temperature: {sensor.get('sensorname', 'Sensor ' + slot)}",
+                        detail=f"Temperature = {temp_f:.1f}°F / {temp:.1f}°C (threshold: {threshold_f:.0f}°F / {threshold_c:.1f}°C)",
+                        value=round(temp_f, 1),
+                        threshold=threshold_f,
                     ))
 
         if has_humid:
