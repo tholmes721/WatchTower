@@ -1,0 +1,15 @@
+version: "3.9"
+
+services:
+  pdu-dashboard:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - pdu-data:/app/data
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:////app/data/pdu.db
+    restart: unless-stopped
+
+volumes:
+  pdu-data:

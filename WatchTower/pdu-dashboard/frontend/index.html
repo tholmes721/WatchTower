@@ -1,0 +1,311 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WatchTower</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-left">
+      <div class="logo-wrap">
+        <div class="logo-icon"></div>
+        <div class="logo-text">
+          <span class="logo-name">WatchTower</span>
+          <span class="logo-sub">PDU Monitoring</span>
+        </div>
+      </div>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-secondary" id="btn-upload" title="Upload Prometheus export file">
+        ↑ Upload File
+      </button>
+      <button class="btn btn-primary" id="btn-add-pdu" title="Configure a new PDU for polling">
+        + Add PDU
+      </button>
+      <button class="btn btn-ghost" id="btn-bulk-creds" title="Apply credentials to multiple PDUs">
+        ⚙ Bulk Credentials
+      </button>
+      <button class="btn btn-ghost" id="btn-refresh" title="Refresh dashboard">↻ Refresh</button>
+    </div>
+  </header>
+
+  <main class="app-main">
+    <!-- Alert banner -->
+    <div id="global-alert" class="global-alert hidden"></div>
+
+    <!-- Dashboard toolbar -->
+    <div class="dash-toolbar">
+      <input type="text" id="dash-search" class="dash-search" placeholder="Search by name, model, serial, or firmware…" />
+      <div class="dash-filter-pills">
+        <button class="pill active" data-filter="all">All</button>
+        <button class="pill" data-filter="critical">Critical</button>
+        <button class="pill" data-filter="warning">Warning</button>
+        <button class="pill" data-filter="ok">OK</button>
+        <button class="pill" data-filter="polling">Polling</button>
+      </div>
+      <span id="dash-count" class="dash-count"></span>
+    </div>
+
+    <!-- Dashboard grid -->
+    <section id="dashboard-grid" class="dashboard-grid">
+      <div class="loading-state">Loading PDUs…</div>
+    </section>
+  </main>
+
+  <!-- ── Modals ── -->
+
+  <!-- Upload modal -->
+  <div id="modal-upload" class="modal hidden">
+    <div class="modal-box">
+      <h2>Upload Prometheus Export</h2>
+      <p class="modal-desc">Upload a Prometheus text file exported from a Raritan PDU.
+        A PDU config will be created automatically if one doesn't exist.</p>
+      <form id="form-upload">
+        <div class="form-group">
+          <label>File (.txt or .prom)</label>
+          <input type="file" id="upload-file" accept=".txt,.prom,text/plain" required />
+        </div>
+        <div class="form-group">
+          <label>Timestamp (optional — leave blank to use current time)</label>
+          <input type="datetime-local" id="upload-ts" />
+        </div>
+        <div class="form-group">
+          <label>Assign to existing PDU (optional)</label>
+          <select id="upload-pdu-select">
+            <option value="">Auto-detect from file</option>
+          </select>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Import</button>
+          <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Add / Edit PDU modal -->
+  <div id="modal-pdu" class="modal hidden">
+    <div class="modal-box">
+      <h2 id="modal-pdu-title">Add PDU</h2>
+      <p class="modal-desc" id="modal-pdu-desc">
+        Enter the PDU's address and credentials. The name, model, serial, and firmware
+        will be discovered automatically from the device on first poll.
+      </p>
+      <form id="form-pdu">
+        <input type="hidden" id="pdu-edit-id" />
+        <div class="form-group">
+          <label>Host / IP Address *</label>
+          <input type="text" id="pdu-host" required placeholder="192.168.1.100 or pdu.hostname.local" />
+        </div>
+        <div class="form-row">
+          <div class="form-group form-group-sm">
+            <label>Protocol</label>
+            <select id="pdu-https">
+              <option value="true">HTTPS</option>
+              <option value="false">HTTP</option>
+            </select>
+          </div>
+          <div class="form-group form-group-sm">
+            <label>Port</label>
+            <input type="number" id="pdu-port" value="443" min="1" max="65535" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="pdu-username" placeholder="admin" autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="pdu-password" autocomplete="new-password" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group form-group-sm">
+            <label>Poll Interval (seconds)</label>
+            <input type="number" id="pdu-interval" value="300" min="10" max="3600" />
+          </div>
+          <div class="form-group form-group-sm form-check-group">
+            <label class="check-label">
+              <input type="checkbox" id="pdu-polling" />
+              Enable Polling
+            </label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" id="btn-save-pdu">Save</button>
+          <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Bulk credentials modal -->
+  <div id="modal-bulk" class="modal hidden">
+    <div class="modal-box">
+      <h2>Bulk Credential Update</h2>
+      <p class="modal-desc">Apply the same credentials to multiple PDUs at once.</p>
+      <form id="form-bulk">
+        <div class="form-group">
+          <label>Select PDUs</label>
+          <div id="bulk-pdu-list" class="checkbox-list"></div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Username *</label>
+            <input type="text" id="bulk-username" required autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label>Password *</label>
+            <input type="password" id="bulk-password" required autocomplete="new-password" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group form-group-sm">
+            <label>Poll Interval (optional)</label>
+            <input type="number" id="bulk-interval" placeholder="leave blank to keep" min="10" />
+          </div>
+          <div class="form-group form-group-sm form-check-group">
+            <label class="check-label">
+              <input type="checkbox" id="bulk-polling" />
+              Enable Polling on selected
+            </label>
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Apply</button>
+          <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- PDU Detail / Trend modal -->
+  <div id="modal-detail" class="modal modal-wide hidden">
+    <div class="modal-box">
+      <div class="modal-detail-header">
+        <h2 id="detail-title">PDU Detail</h2>
+        <button class="btn btn-ghost modal-close">✕ Close</button>
+      </div>
+
+      <div class="detail-tabs">
+        <button class="tab-btn active" data-tab="outlets">Outlets</button>
+        <button class="tab-btn" data-tab="inlet">Inlet / Phases</button>
+        <button class="tab-btn" data-tab="environment">Environment</button>
+        <button class="tab-btn" data-tab="trends">Trends</button>
+        <button class="tab-btn" data-tab="alerts">Alerts</button>
+      </div>
+
+      <div class="tab-content" id="tab-outlets">
+        <div class="table-toolbar">
+          <input type="text" id="outlet-search" placeholder="Filter outlets…" class="search-input" />
+          <label class="check-label">
+            <input type="checkbox" id="outlet-active-only" /> Active only
+          </label>
+        </div>
+        <div class="table-wrap">
+          <table id="outlet-table" class="data-table">
+            <thead>
+              <tr>
+                <th>#</th>
+                <th>Name</th>
+                <th>State</th>
+                <th>Voltage (V)</th>
+                <th>Current (A)</th>
+                <th>Active Power (W)</th>
+                <th>Apparent (VA)</th>
+                <th>Power Factor</th>
+                <th>THD %</th>
+                <th>Energy (kWh)</th>
+              </tr>
+            </thead>
+            <tbody id="outlet-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="tab-content hidden" id="tab-inlet">
+        <div id="inlet-content"></div>
+      </div>
+
+      <div class="tab-content hidden" id="tab-environment">
+        <div class="env-toolbar">
+          <span class="unit-label">°C</span>
+          <label class="unit-toggle" title="Toggle temperature unit">
+            <input type="checkbox" id="temp-unit-toggle" />
+            <span class="unit-slider"></span>
+          </label>
+          <span class="unit-label">°F</span>
+        </div>
+        <div id="env-content"></div>
+      </div>
+
+      <div class="tab-content hidden" id="tab-trends">
+        <div class="trend-controls">
+          <div class="form-group form-group-sm">
+            <label>Metric</label>
+            <select id="trend-metric">
+              <option value="activepower_watt">Active Power (W)</option>
+              <option value="current_ampere">Current (A)</option>
+              <option value="voltage_volt">Voltage (V)</option>
+              <option value="apparentpower_voltampere">Apparent Power (VA)</option>
+              <option value="powerfactor">Power Factor</option>
+              <option value="currentthd_percent">Current THD %</option>
+            </select>
+          </div>
+          <div class="form-group form-group-sm">
+            <label>Scope</label>
+            <select id="trend-scope">
+              <option value="">Inlet totals</option>
+            </select>
+          </div>
+          <div class="form-group form-group-sm">
+            <label>Points</label>
+            <select id="trend-limit">
+              <option value="50">Last 50</option>
+              <option value="100" selected>Last 100</option>
+              <option value="250">Last 250</option>
+              <option value="500">Last 500</option>
+            </select>
+          </div>
+          <button class="btn btn-primary" id="btn-load-trend">Load</button>
+        </div>
+        <div class="chart-wrap">
+          <canvas id="trend-chart"></canvas>
+        </div>
+      </div>
+
+      <div class="tab-content hidden" id="tab-alerts">
+        <div id="alerts-content"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete PDU confirmation modal -->
+  <div id="modal-delete-pdu" class="modal hidden">
+    <div class="modal-box modal-box-sm">
+      <h2>Delete PDU</h2>
+      <p class="modal-desc">
+        Are you sure you want to delete <strong id="delete-pdu-name"></strong>?<br>
+        This will permanently remove the PDU and <strong>all of its historical snapshots</strong>.
+        This cannot be undone.
+      </p>
+      <input type="hidden" id="delete-pdu-id" />
+      <div class="form-actions">
+        <button class="btn btn-danger" id="btn-confirm-delete-pdu">Delete permanently</button>
+        <button class="btn btn-ghost modal-close">Cancel</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Overlay backdrop -->
+  <div id="modal-backdrop" class="modal-backdrop hidden"></div>
+
+  <script src="/static/vendor/chart.umd.min.js"></script>
+  <script src="/static/vendor/date-fns.min.js"></script>
+  <script src="/static/vendor/chartjs-adapter-date-fns.bundle.min.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

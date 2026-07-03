@@ -1,0 +1,1010 @@
+/* PDU Dashboard — main frontend application */
+'use strict';
+
+// ── State ─────────────────────────────────────────────────────────────────
+const state = {
+  pdus: [],           // PDUConfigResponse[]
+  dashboard: [],      // PDUDashboardSummary[]
+  currentDetailPduId: null,
+  currentSnapshot: null,
+  trendChart: null,
+  outletSortCol: null,
+  outletSortDir: 'asc',
+  refreshTimer: null,
+};
+
+const AUTO_REFRESH_MS = 30_000;
+
+// ── Boot ──────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  bindHeaderButtons();
+  bindDashboardSearch();
+  bindModalClose();
+  bindDetailTabs();
+  bindOutletTableControls();
+  bindTrendControls();
+  bindFormSubmits();
+  loadDashboard();
+  state.refreshTimer = setInterval(loadDashboard, AUTO_REFRESH_MS);
+});
+
+// ── API helpers ───────────────────────────────────────────────────────────
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: body instanceof FormData ? {} : { 'Content-Type': 'application/json' },
+    body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
+  };
+  const res = await fetch('/api' + path, opts);
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({ detail: res.statusText }));
+    throw new Error(err.detail || res.statusText);
+  }
+  if (res.status === 204) return null;
+  return res.json();
+}
+
+
+// ── Dashboard load ────────────────────────────────────────────────────────
+async function loadDashboard() {
+  try {
+    const [pdus, dashboard] = await Promise.all([
+      api('GET', '/pdus'),
+      api('GET', '/dashboard'),
+    ]);
+    state.pdus = pdus;
+    state.dashboard = dashboard;
+    renderDashboard();
+  } catch (e) {
+    showGlobalAlert('error', 'Failed to load dashboard: ' + e.message);
+  }
+}
+
+function renderDashboard() {
+  const grid = document.getElementById('dashboard-grid');
+  if (state.dashboard.length === 0) {
+    grid.innerHTML = `<div class="loading-state">
+      No PDUs configured yet.<br><br>
+      <button class="btn btn-primary" onclick="openAddPduModal()">+ Add your first PDU</button>
+      &nbsp; or &nbsp;
+      <button class="btn btn-secondary" onclick="openUploadModal()">↑ Upload a file</button>
+    </div>`;
+    document.getElementById('dash-count').textContent = '';
+    return;
+  }
+
+  const query  = (document.getElementById('dash-search')?.value || '').toLowerCase().trim();
+  const filter = document.querySelector('.pill.active')?.dataset.filter || 'all';
+
+  const visible = state.dashboard.filter(d => {
+    // Status filter
+    if (filter === 'critical' && d.alert_count_critical === 0) return false;
+    if (filter === 'warning'  && d.alert_count_warning === 0)  return false;
+    if (filter === 'ok'       && (d.alert_count_critical > 0 || d.alert_count_warning > 0)) return false;
+    if (filter === 'polling'  && !d.polling_enabled) return false;
+
+    // Text search across name, model, serial, firmware
+    if (query) {
+      const haystack = [
+        d.pdu_name, d.model, d.serial, d.firmware_version, d.host
+      ].join(' ').toLowerCase();
+      if (!haystack.includes(query)) return false;
+    }
+
+    return true;
+  });
+
+  const countEl = document.getElementById('dash-count');
+  if (query || filter !== 'all') {
+    countEl.textContent = `${visible.length} of ${state.dashboard.length} PDUs`;
+  } else {
+    countEl.textContent = `${state.dashboard.length} PDU${state.dashboard.length !== 1 ? 's' : ''}`;
+  }
+
+  if (visible.length === 0) {
+    grid.innerHTML = `<div class="loading-state">
+      No PDUs match your search.<br>
+      <button class="btn btn-ghost" style="margin-top:12px" onclick="clearDashSearch()">Clear filters</button>
+    </div>`;
+    return;
+  }
+
+  grid.innerHTML = visible.map(renderPduCard).join('');
+}
+
+function renderPduCard(d) {
+  const hasCrit = d.alert_count_critical > 0;
+  const hasWarn = d.alert_count_warning > 0;
+  const cardClass = hasCrit ? 'has-critical' : hasWarn ? 'has-warning' : '';
+
+  const badgeHtml = hasCrit
+    ? `<span class="badge badge-critical">⚠ ${d.alert_count_critical} Critical</span>`
+    : hasWarn
+      ? `<span class="badge badge-warning">⚡ ${d.alert_count_warning} Warning</span>`
+      : `<span class="badge badge-ok">✓ OK</span>`;
+
+  const capPct = d.total_family_count > 0
+    ? Math.round(d.exported_family_count / d.total_family_count * 100) : 100;
+  const capBadge = capPct < 100
+    ? `<span class="badge badge-offline" title="Limited export: ${d.missing_families.length} metric families not available on this device">⚠ ${capPct}% export</span>`
+    : '';
+
+  const pollHtml = d.polling_enabled
+    ? `<span class="poll-dot active"></span>Polling`
+    : `<span class="poll-dot"></span>Manual`;
+
+  const lastSeen = d.last_snapshot_at
+    ? timeAgo(d.last_snapshot_at)
+    : 'No data';
+
+  const pW  = d.total_active_power_w   != null ? `${(d.total_active_power_w/1000).toFixed(2)} kW`  : '—';
+  const pVA = d.total_apparent_power_va != null ? `${(d.total_apparent_power_va/1000).toFixed(2)} kVA` : '—';
+  const pA  = d.total_current_a         != null ? `${d.total_current_a.toFixed(1)} A` : '—';
+
+  const topAlerts = d.alerts.slice(0, 3).map(a => `
+    <div class="alert-row ${a.severity}">
+      <span class="alert-icon">${severityIcon(a.severity)}</span>
+      <span>${a.title}</span>
+    </div>`).join('');
+
+  return `
+  <div class="pdu-card ${cardClass}" id="pdu-card-${d.pdu_config_id}">
+    <div class="card-header">
+      <div>
+        <div class="card-title">${esc(d.pdu_name)}</div>
+        <div class="card-subtitle">${esc(d.model)} · ${esc(d.serial)} · ${esc(d.host)}</div>
+        <div class="card-subtitle">FW: ${esc(d.firmware_version || '—')} · Last: ${lastSeen}</div>
+      </div>
+      <div class="card-badges">${badgeHtml}${capBadge}</div>
+    </div>
+    <div class="card-metrics">
+      <div class="metric-cell">
+        <div class="metric-value">${pW}</div>
+        <div class="metric-label">Active Power</div>
+      </div>
+      <div class="metric-cell">
+        <div class="metric-value">${pVA}</div>
+        <div class="metric-label">Apparent Power</div>
+      </div>
+      <div class="metric-cell">
+        <div class="metric-value">${pA}</div>
+        <div class="metric-label">Total Current</div>
+      </div>
+      <div class="metric-cell">
+        <div class="metric-value">${d.active_outlet_count}</div>
+        <div class="metric-label">Active Outlets</div>
+        <div class="metric-sub">of ${d.outlet_count} total</div>
+      </div>
+      <div class="metric-cell">
+        <div class="metric-value ${hasCrit ? 'val-crit' : hasWarn ? 'val-warn' : ''}">${d.alert_count_critical + d.alert_count_warning}</div>
+        <div class="metric-label">Total Alerts</div>
+        <div class="metric-sub">${d.alert_count_critical} crit / ${d.alert_count_warning} warn</div>
+      </div>
+      <div class="metric-cell">
+        <div class="metric-value dim">${d.outlet_count - d.active_outlet_count}</div>
+        <div class="metric-label">Idle Outlets</div>
+      </div>
+    </div>
+    ${topAlerts ? `<div class="alert-strip">${topAlerts}</div>` : ''}
+    <div class="card-footer">
+      <div class="poll-status">${pollHtml}</div>
+      <div class="card-actions">
+        <button class="btn btn-secondary btn-sm" onclick="openDetailModal(${d.pdu_config_id})">Detail</button>
+        <button class="btn btn-secondary btn-sm" onclick="openEditPduModal(${d.pdu_config_id})">Edit</button>
+        <button class="btn btn-ghost btn-sm" onclick="pollNow(${d.pdu_config_id})" title="Poll now">↻</button>
+        <button class="btn btn-danger btn-sm" onclick="openDeletePduModal(${d.pdu_config_id})" title="Delete this PDU">🗑</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+
+// ── Detail modal ──────────────────────────────────────────────────────────
+async function openDetailModal(pduConfigId) {
+  state.currentDetailPduId = pduConfigId;
+  try {
+    // Load latest snapshot
+    const snaps = await api('GET', `/pdus/${pduConfigId}/snapshots?limit=1`);
+    if (!snaps || snaps.length === 0) {
+      showGlobalAlert('info', 'No snapshots available for this PDU yet.');
+      return;
+    }
+    const snap = await api('GET', `/snapshots/${snaps[0].id}`);
+    state.currentSnapshot = snap;
+
+    const pdu = state.dashboard.find(d => d.pdu_config_id === pduConfigId);
+    document.getElementById('detail-title').textContent = pdu ? pdu.pdu_name : 'PDU Detail';
+
+    // Populate outlet scope selector for trends
+    populateTrendScopeOptions(snap.outlet_metrics);
+
+    // Activate first tab
+    switchTab('outlets');
+    renderOutletTable();
+
+    openModal('modal-detail');
+  } catch (e) {
+    showGlobalAlert('error', 'Failed to load PDU detail: ' + e.message);
+  }
+}
+
+function populateTrendScopeOptions(outletMetrics) {
+  const sel = document.getElementById('trend-scope');
+  sel.innerHTML = '<option value="">Inlet totals</option>';
+  Object.entries(outletMetrics).sort((a,b) => +a[0]-+b[0]).forEach(([id, o]) => {
+    const name = o.outletname ? ` — ${o.outletname}` : '';
+    sel.innerHTML += `<option value="${id}">Outlet ${id}${esc(name)}</option>`;
+  });
+}
+
+// ── Outlet table ──────────────────────────────────────────────────────────
+function renderOutletTable() {
+  const snap = state.currentSnapshot;
+  if (!snap) return;
+
+  const searchVal = document.getElementById('outlet-search').value.toLowerCase();
+  const activeOnly = document.getElementById('outlet-active-only').checked;
+
+  let rows = Object.entries(snap.outlet_metrics)
+    .sort((a,b) => +a[0] - +b[0])
+    .filter(([id, o]) => {
+      if (activeOnly && o.outletstate !== 1) return false;
+      const name = (o.outletname || '').toLowerCase();
+      return !searchVal || id.includes(searchVal) || name.includes(searchVal);
+    });
+
+  if (state.outletSortCol !== null) {
+    rows = sortOutletRows(rows, state.outletSortCol, state.outletSortDir);
+  }
+
+  const tbody = document.getElementById('outlet-tbody');
+  tbody.innerHTML = rows.map(([id, o]) => {
+    const state_on = o.outletstate === 1;
+    const pf = o.powerfactor ?? o.displacementpowerfactor;
+    const thd = o.currentthd_percent;
+    const energy_kwh = o.activeenergy_watthour_total != null
+      ? (o.activeenergy_watthour_total / 1000).toFixed(2) : '—';
+
+    return `<tr>
+      <td>${id}</td>
+      <td>${o.outletname ? esc(o.outletname) : '<span class="outlet-name-empty">unnamed</span>'}</td>
+      <td class="${state_on ? 'state-on' : 'state-off'}">${state_on ? 'ON' : 'OFF'}</td>
+      <td class="${voltClass(o.voltage_volt)}">${fmt(o.voltage_volt, 1, 'V')}</td>
+      <td>${fmt(o.current_ampere, 2, 'A')}</td>
+      <td>${fmt(o.activepower_watt, 1, 'W')}</td>
+      <td>${fmt(o.apparentpower_voltampere, 1, 'VA')}</td>
+      <td class="${pfClass(pf)}">${pf != null ? pf.toFixed(2) : '—'}</td>
+      <td class="${thdClass(thd)}">${thd != null ? thd.toFixed(1) + '%' : '—'}</td>
+      <td>${energy_kwh !== '—' ? energy_kwh + ' kWh' : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function bindOutletTableControls() {
+  document.getElementById('outlet-search').addEventListener('input', renderOutletTable);
+  document.getElementById('outlet-active-only').addEventListener('change', renderOutletTable);
+
+  document.getElementById('outlet-table').querySelectorAll('th').forEach((th, i) => {
+    th.addEventListener('click', () => {
+      if (state.outletSortCol === i) {
+        state.outletSortDir = state.outletSortDir === 'asc' ? 'desc' : 'asc';
+      } else {
+        state.outletSortCol = i;
+        state.outletSortDir = 'asc';
+      }
+      document.querySelectorAll('#outlet-table th').forEach(h => {
+        h.classList.remove('sorted-asc', 'sorted-desc');
+      });
+      th.classList.add(state.outletSortDir === 'asc' ? 'sorted-asc' : 'sorted-desc');
+      renderOutletTable();
+    });
+  });
+}
+
+const SORT_KEYS = [
+  null,                        // # (use id)
+  'outletname',
+  'outletstate',
+  'voltage_volt',
+  'current_ampere',
+  'activepower_watt',
+  'apparentpower_voltampere',
+  'powerfactor',
+  'currentthd_percent',
+  'activeenergy_watthour_total',
+];
+
+function sortOutletRows(rows, colIdx, dir) {
+  return [...rows].sort((a, b) => {
+    let va, vb;
+    if (colIdx === 0) {
+      va = +a[0]; vb = +b[0];
+    } else {
+      const key = SORT_KEYS[colIdx];
+      va = a[1][key] ?? -Infinity;
+      vb = b[1][key] ?? -Infinity;
+      if (typeof va === 'string') va = va.toLowerCase();
+      if (typeof vb === 'string') vb = vb.toLowerCase();
+    }
+    return dir === 'asc' ? (va > vb ? 1 : -1) : (va < vb ? 1 : -1);
+  });
+}
+
+
+// ── Inlet tab ─────────────────────────────────────────────────────────────
+function renderInletTab() {
+  const snap = state.currentSnapshot;
+  const container = document.getElementById('inlet-content');
+  if (!snap || !Object.keys(snap.inlet_metrics).length) {
+    container.innerHTML = '<div class="no-alerts"><span class="no-alerts-icon">📡</span>No inlet data available</div>';
+    return;
+  }
+
+  let html = '';
+  for (const [inletId, inlet] of Object.entries(snap.inlet_metrics)) {
+    const t = inlet.total || {};
+    html += `<div class="inlet-section">
+      <h3>Inlet ${inletId} — ${esc(inlet.inletname || '')}</h3>
+      <div class="phase-grid">
+        <div class="phase-card">
+          <div class="phase-label">TOTAL</div>
+          ${phaseMetric('Active Power',    t.activepower_watt,       'W')}
+          ${phaseMetric('Apparent Power',  t.apparentpower_voltampere,'VA')}
+          ${phaseMetric('Current',         t.current_ampere,          'A')}
+          ${phaseMetric('Frequency',       t.linefrequency_hertz,     'Hz')}
+          ${phaseMetric('Unbalanced I',    t.unbalancedcurrent_percent,'%')}
+        </div>`;
+
+    const phases = inlet.phases || {};
+    for (const [phase, data] of Object.entries(phases)) {
+      html += `<div class="phase-card">
+        <div class="phase-label">${phase}</div>
+        ${phaseMetric('Voltage (L-N)', data.voltageln_volt,          'V')}
+        ${phaseMetric('Current',       data.current_ampere,           'A')}
+        ${phaseMetric('Active Power',  data.activepower_watt,         'W')}
+        ${phaseMetric('Power Factor',  data.powerfactor,              '')}
+        ${phaseMetric('THD I',         data.currentthd_percent,       '%')}
+        ${phaseMetric('THD V',         data.voltagethd_percent,       '%')}
+        ${phaseMetric('Phase Angle',   data.phaseangle_degree,        '°')}
+      </div>`;
+    }
+
+    const linepairs = inlet.linepairs || {};
+    for (const [pair, data] of Object.entries(linepairs)) {
+      html += `<div class="phase-card">
+        <div class="phase-label">${pair}</div>
+        ${phaseMetric('Voltage (L-L)', data.voltage_volt, 'V')}
+      </div>`;
+    }
+
+    html += '</div></div>';
+  }
+
+  const ocps = snap.ocp_metrics || {};
+  if (Object.keys(ocps).length) {
+    html += `<div class="inlet-section"><h3>Overcurrent Protectors</h3><div class="phase-grid">`;
+    for (const [ocpId, ocp] of Object.entries(ocps)) {
+      const load = ocp.ocprating ? (ocp.current_ampere / ocp.ocprating * 100).toFixed(0) : null;
+      html += `<div class="phase-card">
+        <div class="phase-label">OCP ${ocpId} ${esc(ocp.ocpname || '')}</div>
+        ${phaseMetric('Current',  ocp.current_ampere, 'A')}
+        ${phaseMetric('Rating',   ocp.ocprating,      'A')}
+        ${load != null ? `<div class="phase-metric"><span>Load</span><span class="pm-val ${+load >= 90 ? 'val-crit' : +load >= 80 ? 'val-warn' : ''}">${load}%</span></div>` : ''}
+      </div>`;
+    }
+    html += '</div></div>';
+  }
+
+  container.innerHTML = html;
+}
+
+function phaseMetric(label, value, unit) {
+  if (value == null) return '';
+  return `<div class="phase-metric"><span>${label}</span><span class="pm-val">${value % 1 === 0 ? value : value.toFixed(2)}${unit}</span></div>`;
+}
+
+// ── Environment tab ───────────────────────────────────────────────────────
+function useFahrenheit() {
+  return document.getElementById('temp-unit-toggle')?.checked ?? false;
+}
+
+function toDisplayTemp(celsius) {
+  if (celsius == null) return null;
+  return useFahrenheit() ? (celsius * 9/5 + 32) : celsius;
+}
+
+function tempUnit() {
+  return useFahrenheit() ? '°F' : '°C';
+}
+
+// Thresholds are stored in °C; convert for display comparison only
+function tempClass(celsius) {
+  if (celsius == null) return '';
+  if (celsius >= 40) return 'temp-crit';
+  if (celsius >= 35) return 'temp-warn';
+  return 'temp-ok';
+}
+
+function dewClass(celsius) {
+  // Dew point: same visual treatment as temperature
+  return tempClass(celsius);
+}
+
+function renderEnvTab() {
+  const snap = state.currentSnapshot;
+  const container = document.getElementById('env-content');
+  const sensors = snap?.peripheral_metrics || {};
+
+  if (!Object.keys(sensors).length) {
+    container.innerHTML = '<div class="no-alerts"><span class="no-alerts-icon">🌡️</span>No environmental sensors detected</div>';
+    return;
+  }
+
+  // Wire up toggle to re-render on change (only once)
+  const toggle = document.getElementById('temp-unit-toggle');
+  if (toggle && !toggle._bound) {
+    toggle.addEventListener('change', renderEnvTab);
+    toggle._bound = true;
+  }
+
+  const unit = tempUnit();
+
+  const cards = Object.values(sensors).map(s => {
+    const tempC = s.peripheral_temperature_degreecelsius;
+    const hum   = s.peripheral_relativehumidity_percent;
+    const dewC  = s.peripheral_dewpoint_degreecelsius;
+    const aflow = s.peripheral_airflow_meterpersecond;
+    const apres = s.peripheral_airpressure_pascal;
+    const ahum  = s.peripheral_absolutehumidity_gpercubicmeter;
+
+    let html = '';
+
+    if (tempC != null) {
+      const display = toDisplayTemp(tempC);
+      const cls = tempClass(tempC);
+      html += `<div class="env-card ${cls}">
+        <div class="env-value">${display.toFixed(1)}${unit}</div>
+        <div class="env-label">Temperature</div>
+        <div class="env-name">${esc(s.sensorname || '')}</div>
+      </div>`;
+    }
+
+    if (hum != null) {
+      const cls = hum >= 80 ? 'humid-crit' : hum >= 70 ? 'humid-warn' : 'humid-ok';
+      html += `<div class="env-card ${cls}">
+        <div class="env-value">${hum.toFixed(1)}%</div>
+        <div class="env-label">Relative Humidity</div>
+        <div class="env-name">${esc(s.sensorname || '')}</div>
+      </div>`;
+    }
+
+    if (dewC != null) {
+      const display = toDisplayTemp(dewC);
+      const cls = dewClass(dewC);
+      html += `<div class="env-card ${cls}">
+        <div class="env-value" style="font-size:22px">${display.toFixed(1)}${unit}</div>
+        <div class="env-label">Dew Point</div>
+        <div class="env-name">${esc(s.sensorname || '')}</div>
+      </div>`;
+    }
+
+    if (ahum  != null) html += envSimpleCard(`${ahum.toFixed(2)} g/m³`,  'Absolute Humidity', s.sensorname);
+    if (aflow != null) html += envSimpleCard(`${aflow.toFixed(2)} m/s`,  'Airflow',            s.sensorname);
+    if (apres != null) html += envSimpleCard(`${apres.toFixed(0)} Pa`,   'Air Pressure',       s.sensorname);
+
+    return html;
+  }).join('');
+
+  container.innerHTML = `<div class="env-grid">${cards}</div>`;
+}
+
+function envSimpleCard(val, label, name) {
+  return `<div class="env-card">
+    <div class="env-value" style="font-size:22px;color:var(--accent)">${val}</div>
+    <div class="env-label">${label}</div>
+    <div class="env-name">${esc(name || '')}</div>
+  </div>`;
+}
+
+
+// ── Trend tab ─────────────────────────────────────────────────────────────
+function bindTrendControls() {
+  document.getElementById('btn-load-trend').addEventListener('click', loadTrend);
+}
+
+async function loadTrend() {
+  const pduId  = state.currentDetailPduId;
+  const metric = document.getElementById('trend-metric').value;
+  const scope  = document.getElementById('trend-scope').value;
+  const limit  = document.getElementById('trend-limit').value;
+  const wrap   = document.querySelector('.chart-wrap');
+
+  // Ensure canvas exists
+  if (!wrap.querySelector('canvas')) {
+    wrap.innerHTML = '<canvas id="trend-chart"></canvas>';
+  }
+
+  try {
+    const params = new URLSearchParams({ metrics: metric, limit });
+    if (scope) params.set('outlet_id', scope);
+    const data = await api('GET', `/pdus/${pduId}/trends?${params}`);
+    renderTrendChart(data, metric);
+  } catch (e) {
+    wrap.innerHTML = `<div class="no-alerts">
+      <span class="no-alerts-icon">⚠️</span>
+      Failed to load trend:<br><span style="color:var(--text-muted);font-size:12px">${esc(e.message)}</span>
+    </div>`;
+  }
+}
+
+function renderTrendChart(data, metric) {
+  const ctx = document.getElementById('trend-chart');
+  if (state.trendChart) {
+    state.trendChart.destroy();
+    state.trendChart = null;
+  }
+
+  if (!data.series.length || !data.series[0].points.length) {
+    ctx.parentElement.innerHTML = `<div class="no-alerts">
+      <span class="no-alerts-icon">📈</span>
+      Not enough data points yet.<br>
+      <span style="color:var(--text-muted);font-size:12px">
+        Import snapshots with different timestamps to see trends.<br>
+        Tip: use the timestamp field in the upload dialog to spread test files over time.
+      </span>
+    </div>`;
+    return;
+  }
+
+  const palette = ['#4f8ef7', '#36d399', '#fbbd23', '#f87272', '#a855f7', '#f97316'];
+  const datasets = data.series.map((s, i) => ({
+    label: s.label,
+    data: s.points.map(p => ({ x: new Date(p.captured_at).getTime(), y: p.value })),
+    borderColor: palette[i % palette.length],
+    backgroundColor: palette[i % palette.length] + '22',
+    borderWidth: 2,
+    pointRadius: s.points.length < 50 ? 4 : 1,
+    tension: 0.3,
+    fill: false,
+  }));
+
+  state.trendChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      animation: { duration: 300 },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'MMM d, HH:mm' },
+          ticks: { color: '#8892b0', maxRotation: 0 },
+          grid: { color: '#2e3348' },
+        },
+        y: {
+          ticks: { color: '#8892b0' },
+          grid: { color: '#2e3348' },
+          title: { display: true, text: metricLabel(metric), color: '#8892b0' },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#e2e6f0' } },
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)} ${metricUnit(metric)}`,
+          },
+        },
+      },
+    },
+  });
+}
+
+function metricLabel(m) {
+  const map = {
+    activepower_watt: 'Active Power (W)',
+    current_ampere: 'Current (A)',
+    voltage_volt: 'Voltage (V)',
+    apparentpower_voltampere: 'Apparent Power (VA)',
+    powerfactor: 'Power Factor',
+    currentthd_percent: 'Current THD (%)',
+  };
+  return map[m] || m;
+}
+
+function metricUnit(m) {
+  const map = { activepower_watt:'W', current_ampere:'A', voltage_volt:'V',
+    apparentpower_voltampere:'VA', powerfactor:'', currentthd_percent:'%' };
+  return map[m] || '';
+}
+
+// ── Alerts tab ────────────────────────────────────────────────────────────
+function renderAlertsTab() {
+  const pdu = state.dashboard.find(d => d.pdu_config_id === state.currentDetailPduId);
+  const container = document.getElementById('alerts-content');
+  if (!pdu) return;
+
+  let html = '';
+
+  // ── Limited export notice ─────────────────────────────────────────────
+  if (pdu.missing_families && pdu.missing_families.length > 0) {
+    const capPct = Math.round(pdu.exported_family_count / pdu.total_family_count * 100);
+    const familyList = pdu.missing_families
+      .map(f => `<span class="family-tag">${esc(f)}</span>`)
+      .join('');
+    html += `<div class="export-capability-card">
+      <div class="export-cap-header">
+        <span class="export-cap-icon">📋</span>
+        <div>
+          <div class="export-cap-title">Limited export — ${capPct}% of metrics available (${pdu.exported_family_count} of ${pdu.total_family_count} families)</div>
+          <div class="export-cap-detail">This device does not export the following metric families.
+            Alerts that depend on these metrics are automatically suppressed.</div>
+        </div>
+      </div>
+      <div class="family-tag-list">${familyList}</div>
+    </div>`;
+  }
+
+  // ── Alerts list ───────────────────────────────────────────────────────
+  if (!pdu.alerts.length) {
+    html += `<div class="no-alerts"><span class="no-alerts-icon">✅</span>No alerts detected</div>`;
+  } else {
+    html += `<div class="alerts-list">` +
+      pdu.alerts.map(a => `
+        <div class="alert-card ${a.severity}">
+          <div class="alert-severity-icon">${severityIcon(a.severity)}</div>
+          <div class="alert-body">
+            <div class="alert-title">${esc(a.title)}</div>
+            <div class="alert-detail">${esc(a.detail)}</div>
+            ${a.value != null ? `<div class="alert-meta">Value: ${a.value}${a.threshold != null ? ' · Threshold: ' + a.threshold : ''}</div>` : ''}
+          </div>
+        </div>`).join('') + `</div>`;
+  }
+
+  container.innerHTML = html;
+}
+
+
+// ── Tab switching ─────────────────────────────────────────────────────────
+function bindDetailTabs() {
+  document.querySelectorAll('.tab-btn').forEach(btn => {
+    btn.addEventListener('click', () => switchTab(btn.dataset.tab));
+  });
+}
+
+function switchTab(tabName) {
+  document.querySelectorAll('.tab-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.tab === tabName);
+  });
+  document.querySelectorAll('.tab-content').forEach(c => {
+    c.classList.toggle('hidden', c.id !== 'tab-' + tabName);
+  });
+  // Lazy-render tab content
+  if (tabName === 'inlet')       renderInletTab();
+  if (tabName === 'environment') renderEnvTab();
+  if (tabName === 'alerts')      renderAlertsTab();
+  if (tabName === 'trends') {
+    // Restore canvas if it was replaced by no-data message
+    const wrap = document.querySelector('.chart-wrap');
+    if (!wrap.querySelector('canvas')) {
+      wrap.innerHTML = '<canvas id="trend-chart"></canvas>';
+    }
+  }
+}
+
+// ── Modal management ──────────────────────────────────────────────────────
+function openModal(id) {
+  document.getElementById(id).classList.remove('hidden');
+  document.getElementById('modal-backdrop').classList.remove('hidden');
+}
+
+function closeAllModals() {
+  document.querySelectorAll('.modal').forEach(m => m.classList.add('hidden'));
+  document.getElementById('modal-backdrop').classList.add('hidden');
+}
+
+function bindModalClose() {
+  document.getElementById('modal-backdrop').addEventListener('click', closeAllModals);
+  document.querySelectorAll('.modal-close').forEach(btn => {
+    btn.addEventListener('click', closeAllModals);
+  });
+}
+
+// ── Header buttons ────────────────────────────────────────────────────────
+function bindHeaderButtons() {
+  document.getElementById('btn-upload').addEventListener('click', openUploadModal);
+  document.getElementById('btn-add-pdu').addEventListener('click', openAddPduModal);
+  document.getElementById('btn-bulk-creds').addEventListener('click', openBulkCredsModal);
+  document.getElementById('btn-refresh').addEventListener('click', loadDashboard);
+}
+
+// ── Dashboard search & filter ─────────────────────────────────────────────
+function bindDashboardSearch() {
+  const search = document.getElementById('dash-search');
+  let debounce;
+  search.addEventListener('input', () => {
+    clearTimeout(debounce);
+    debounce = setTimeout(renderDashboard, 150);
+  });
+  // Clear on Escape
+  search.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { search.value = ''; renderDashboard(); }
+  });
+
+  document.querySelectorAll('.pill').forEach(pill => {
+    pill.addEventListener('click', () => {
+      document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+      pill.classList.add('active');
+      renderDashboard();
+    });
+  });
+}
+
+function clearDashSearch() {
+  document.getElementById('dash-search').value = '';
+  document.querySelectorAll('.pill').forEach(p => p.classList.remove('active'));
+  document.querySelector('.pill[data-filter="all"]').classList.add('active');
+  renderDashboard();
+}
+
+// ── Upload modal ──────────────────────────────────────────────────────────
+function openUploadModal() {
+  // Populate PDU selector
+  const sel = document.getElementById('upload-pdu-select');
+  sel.innerHTML = '<option value="">Auto-detect from file</option>';
+  state.pdus.forEach(p => {
+    sel.innerHTML += `<option value="${p.id}">${esc(p.name)}</option>`;
+  });
+  document.getElementById('form-upload').reset();
+  openModal('modal-upload');
+}
+
+// ── Add / Edit PDU modal ──────────────────────────────────────────────────
+function openAddPduModal() {
+  document.getElementById('modal-pdu-title').textContent = 'Add PDU';
+  document.getElementById('modal-pdu-desc').textContent =
+    'Enter the PDU\'s address and credentials. Name, model, serial, and firmware are discovered automatically on first poll.';
+  document.getElementById('modal-pdu-desc').classList.remove('hidden');
+  document.getElementById('form-pdu').reset();
+  document.getElementById('pdu-edit-id').value = '';
+  document.getElementById('pdu-port').value = '443';
+  document.getElementById('pdu-interval').value = '300';
+  document.getElementById('pdu-https').value = 'true';
+  document.getElementById('pdu-polling').checked = false;
+  openModal('modal-pdu');
+}
+
+function openEditPduModal(pduConfigId) {
+  const pdu = state.pdus.find(p => p.id === pduConfigId);
+  if (!pdu) return;
+  // For edit, show what was discovered so the user knows what device this is
+  const snap = state.dashboard.find(d => d.pdu_config_id === pduConfigId);
+  const discovered = snap && snap.model
+    ? `Discovered: ${snap.pdu_name} · ${snap.model} · S/N ${snap.serial}`
+    : 'Not yet polled — device info will be discovered on first poll.';
+  document.getElementById('modal-pdu-title').textContent = 'Edit PDU';
+  document.getElementById('modal-pdu-desc').textContent = discovered;
+  document.getElementById('modal-pdu-desc').classList.remove('hidden');
+  document.getElementById('pdu-edit-id').value = pdu.id;
+  document.getElementById('pdu-host').value = pdu.host;
+  document.getElementById('pdu-port').value = pdu.port;
+  document.getElementById('pdu-https').value = String(pdu.use_https);
+  document.getElementById('pdu-username').value = pdu.username || '';
+  document.getElementById('pdu-password').value = '';
+  document.getElementById('pdu-interval').value = pdu.poll_interval_seconds;
+  document.getElementById('pdu-polling').checked = pdu.polling_enabled;
+  openModal('modal-pdu');
+}
+
+// ── Bulk credentials modal ────────────────────────────────────────────────
+function openBulkCredsModal() {
+  const list = document.getElementById('bulk-pdu-list');
+  list.innerHTML = state.pdus.length
+    ? state.pdus.map(p => `
+        <label>
+          <input type="checkbox" value="${p.id}" />
+          ${esc(p.name)} <span style="color:var(--text-muted);font-size:11px">(${esc(p.host)})</span>
+        </label>`).join('')
+    : '<span style="color:var(--text-muted)">No PDUs configured yet.</span>';
+
+  document.getElementById('form-bulk').reset();
+  openModal('modal-bulk');
+}
+
+
+// ── Form submissions ──────────────────────────────────────────────────────
+function bindFormSubmits() {
+  document.getElementById('form-upload').addEventListener('submit', handleUpload);
+  document.getElementById('form-pdu').addEventListener('submit', handleSavePdu);
+  document.getElementById('form-bulk').addEventListener('submit', handleBulkCreds);
+  document.getElementById('btn-confirm-delete-pdu').addEventListener('click', confirmDeletePdu);
+}
+
+async function handleUpload(e) {
+  e.preventDefault();
+  const fileInput = document.getElementById('upload-file');
+  const tsInput   = document.getElementById('upload-ts').value;
+  const pduSel    = document.getElementById('upload-pdu-select').value;
+
+  if (!fileInput.files.length) return;
+
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+  if (tsInput)  form.append('captured_at', tsInput);
+  if (pduSel)   form.append('pdu_config_id', pduSel);
+
+  try {
+    setButtonLoading(e.submitter, true);
+    const snap = await api('POST', '/upload', form);
+    closeAllModals();
+    showGlobalAlert('success', `Imported snapshot #${snap.id} for "${snap.pdu_name || 'unknown PDU'}"`);
+    await loadDashboard();
+  } catch (err) {
+    showGlobalAlert('error', 'Upload failed: ' + err.message);
+  } finally {
+    setButtonLoading(e.submitter, false);
+  }
+}
+
+async function handleSavePdu(e) {
+  e.preventDefault();
+  const editId = document.getElementById('pdu-edit-id').value;
+  const payload = {
+    host:                  document.getElementById('pdu-host').value.trim(),
+    port:                  parseInt(document.getElementById('pdu-port').value),
+    use_https:             document.getElementById('pdu-https').value === 'true',
+    username:              document.getElementById('pdu-username').value.trim() || null,
+    poll_interval_seconds: parseInt(document.getElementById('pdu-interval').value),
+    polling_enabled:       document.getElementById('pdu-polling').checked,
+  };
+  const pwd = document.getElementById('pdu-password').value;
+  if (pwd) payload.password = pwd;
+
+  try {
+    setButtonLoading(e.submitter, true);
+    if (editId) {
+      await api('PATCH', `/pdus/${editId}`, payload);
+      showGlobalAlert('success', 'PDU updated.');
+    } else {
+      await api('POST', '/pdus', payload);
+      showGlobalAlert('success', 'PDU added.');
+    }
+    closeAllModals();
+    await loadDashboard();
+  } catch (err) {
+    showGlobalAlert('error', 'Save failed: ' + err.message);
+  } finally {
+    setButtonLoading(e.submitter, false);
+  }
+}
+
+async function handleBulkCreds(e) {
+  e.preventDefault();
+  const checked = [...document.querySelectorAll('#bulk-pdu-list input:checked')];
+  if (!checked.length) {
+    showGlobalAlert('error', 'Select at least one PDU.');
+    return;
+  }
+
+  const intervalVal = document.getElementById('bulk-interval').value;
+  const payload = {
+    pdu_config_ids: checked.map(c => parseInt(c.value)),
+    username:       document.getElementById('bulk-username').value.trim(),
+    password:       document.getElementById('bulk-password').value,
+    polling_enabled: document.getElementById('bulk-polling').checked,
+  };
+  if (intervalVal) payload.poll_interval_seconds = parseInt(intervalVal);
+
+  try {
+    setButtonLoading(e.submitter, true);
+    const updated = await api('POST', '/pdus/bulk-credentials', payload);
+    closeAllModals();
+    showGlobalAlert('success', `Credentials applied to ${updated.length} PDU(s).`);
+    await loadDashboard();
+  } catch (err) {
+    showGlobalAlert('error', 'Bulk update failed: ' + err.message);
+  } finally {
+    setButtonLoading(e.submitter, false);
+  }
+}
+
+async function pollNow(pduConfigId) {
+  try {
+    await api('POST', `/pdus/${pduConfigId}/poll-now`);
+    showGlobalAlert('info', 'Poll initiated — refresh in a moment.');
+    setTimeout(loadDashboard, 3000);
+  } catch (e) {
+    showGlobalAlert('error', 'Poll failed: ' + e.message);
+  }
+}
+
+// ── Delete PDU ────────────────────────────────────────────────────────────
+function openDeletePduModal(pduConfigId) {
+  const pdu = state.dashboard.find(d => d.pdu_config_id === pduConfigId);
+  const name = pdu ? pdu.pdu_name : `PDU ${pduConfigId}`;
+  document.getElementById('delete-pdu-id').value = pduConfigId;
+  document.getElementById('delete-pdu-name').textContent = name;
+  openModal('modal-delete-pdu');
+}
+
+async function confirmDeletePdu() {
+  const pduId = document.getElementById('delete-pdu-id').value;
+  const btn   = document.getElementById('btn-confirm-delete-pdu');
+  try {
+    setButtonLoading(btn, true);
+    await api('DELETE', `/pdus/${pduId}`);
+    closeAllModals();
+    showGlobalAlert('success', 'PDU deleted.');
+    await loadDashboard();
+  } catch (e) {
+    showGlobalAlert('error', 'Delete failed: ' + e.message);
+  } finally {
+    setButtonLoading(btn, false);
+  }
+}
+
+
+// ── Global alert banner ───────────────────────────────────────────────────
+let _alertTimer = null;
+function showGlobalAlert(type, msg) {
+  const el = document.getElementById('global-alert');
+  el.className = `global-alert ${type}`;
+  el.textContent = msg;
+  el.classList.remove('hidden');
+  if (_alertTimer) clearTimeout(_alertTimer);
+  _alertTimer = setTimeout(() => el.classList.add('hidden'), 6000);
+}
+
+// ── Utility / formatting ──────────────────────────────────────────────────
+function esc(str) {
+  return String(str ?? '')
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+    .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function fmt(val, decimals, unit) {
+  if (val == null) return '—';
+  const n = typeof val === 'number' ? val.toFixed(decimals) : val;
+  return unit ? `${n} ${unit}` : `${n}`;
+}
+
+function timeAgo(isoStr) {
+  const diff = Date.now() - new Date(isoStr).getTime();
+  const s = Math.floor(diff / 1000);
+  if (s < 60)  return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ago`;
+  return `${Math.floor(s/86400)}d ago`;
+}
+
+function severityIcon(sev) {
+  return sev === 'critical' ? '🔴' : sev === 'warning' ? '🟡' : 'ℹ️';
+}
+
+function voltClass(v) {
+  if (v == null || v === 0) return 'val-dim';
+  // nominal ~208V ±10%
+  if (v < 187 || v > 229) return 'val-crit';
+  if (v < 197 || v > 219) return 'val-warn';
+  return 'val-ok';
+}
+
+function pfClass(pf) {
+  if (pf == null) return '';
+  if (pf < 0.75) return 'val-crit';
+  if (pf < 0.85) return 'val-warn';
+  return 'val-ok';
+}
+
+function thdClass(thd) {
+  if (thd == null) return '';
+  if (thd >= 30) return 'val-crit';
+  if (thd >= 20) return 'val-warn';
+  return 'val-ok';
+}
+
+function setButtonLoading(btn, loading) {
+  if (!btn) return;
+  btn.disabled = loading;
+  btn._orig = btn._orig || btn.textContent;
+  btn.textContent = loading ? 'Working…' : btn._orig;
+}
