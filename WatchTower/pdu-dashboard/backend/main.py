@@ -377,10 +377,10 @@ async def get_dashboard(db: AsyncSession = Depends(get_db)):
             peripheral_metrics=snap.peripheral_metrics,
             exported_families=set(snap.exported_families),
         )
-        # If exported_families is empty (legacy snapshots or missing # TYPE lines),
-        # infer from the actual metric data so alerts are not suppressed
-        if not ps.exported_families:
-            ps.exported_families = _infer_families(ps)
+        # Always supplement exported_families with inference from actual data.
+        # TYPE lines may not declare peripheral families even when sensor data
+        # is present in the export.
+        ps.exported_families |= _infer_families(ps)
 
         alerts = analyse(ps)
         critical = sum(1 for a in alerts if a.severity == "critical")
@@ -436,9 +436,8 @@ async def get_analysis(pdu_id: int, db: AsyncSession = Depends(get_db)):
         peripheral_metrics=snap.peripheral_metrics,
         exported_families=set(snap.exported_families),
     )
-    # If exported_families is empty, infer from actual data
-    if not ps.exported_families:
-        ps.exported_families = _infer_families(ps)
+    # Always supplement with inference from actual data
+    ps.exported_families |= _infer_families(ps)
     return {"alerts": analyse(ps)}
 
 

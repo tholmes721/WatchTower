@@ -222,14 +222,11 @@ def parse_prometheus_text(text: str) -> ParsedSnapshot:
         # ── Fallback ─────────────────────────────────────────────────────────
         snapshot.other_samples.append(sample)
 
-    # ── Infer exported families from parsed data ────────────────────────────
-    # If no # TYPE lines were present (some PDU configs strip comments, or
-    # the export uses a non-standard format), infer which families are available
-    # from the actual metric keys that were successfully parsed.
-    # This ensures the analysis engine doesn't suppress all alerts just because
-    # TYPE declarations were missing.
-    if not snapshot.exported_families:
-        snapshot.exported_families = _infer_families(snapshot)
+    # ── Supplement exported families from parsed data ──────────────────────────
+    # TYPE lines may not declare all families (e.g., peripheral sensor metrics
+    # are often present as data but not declared with # TYPE). Always merge
+    # inferred families so the analysis engine sees everything that's available.
+    snapshot.exported_families |= _infer_families(snapshot)
 
     return snapshot
 
