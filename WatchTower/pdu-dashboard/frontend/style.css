@@ -265,6 +265,16 @@ body {
 
 .card-title { font-size: 15px; font-weight: 600; }
 .card-subtitle { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.card-subtitle .pdu-host-link {
+  color: var(--accent);
+  text-decoration: none;
+  border-bottom: 1px dotted var(--accent);
+  transition: color 0.15s;
+}
+.card-subtitle .pdu-host-link:hover {
+  color: var(--text);
+  border-bottom-color: var(--text);
+}
 
 .card-badges { display: flex; gap: 6px; flex-shrink: 0; }
 .badge {

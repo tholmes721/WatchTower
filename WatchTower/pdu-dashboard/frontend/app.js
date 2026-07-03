@@ -152,7 +152,7 @@ function renderPduCard(d) {
     <div class="card-header">
       <div>
         <div class="card-title">${esc(d.pdu_name)}</div>
-        <div class="card-subtitle">${esc(d.model)} · ${esc(d.serial)} · ${esc(d.host)}</div>
+        <div class="card-subtitle">${esc(d.model)} · ${esc(d.serial)} · <a href="${pduWebUrl(d)}" target="_blank" rel="noopener" class="pdu-host-link" title="Open PDU web interface">${esc(d.host)}</a></div>
         <div class="card-subtitle">FW: ${esc(d.firmware_version || '—')} · Last: ${lastSeen}</div>
       </div>
       <div class="card-badges">${badgeHtml}${capBadge}</div>
@@ -1004,6 +1004,17 @@ function showGlobalAlert(type, msg) {
 }
 
 // ── Utility / formatting ──────────────────────────────────────────────────
+function pduWebUrl(dashboardItem) {
+  // Look up the full PDU config to get protocol and port
+  const pdu = state.pdus.find(p => p.id === dashboardItem.pdu_config_id);
+  const scheme = pdu && pdu.use_https === false ? 'http' : 'https';
+  const port = pdu ? pdu.port : 443;
+  const host = dashboardItem.host;
+  // Omit port if it's the default for the scheme
+  const showPort = (scheme === 'https' && port !== 443) || (scheme === 'http' && port !== 80);
+  return `${scheme}://${host}${showPort ? ':' + port : ''}`;
+}
+
 function esc(str) {
   return String(str ?? '')
     .replace(/&/g,'&amp;').replace(/</g,'&lt;')
