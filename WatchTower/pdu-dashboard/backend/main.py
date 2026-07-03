@@ -33,7 +33,7 @@ from .models import (
 )
 from .parser import parse_prometheus_text
 from .poller import reload_all_schedules, schedule_pdu, scrape_pdu, unschedule_pdu
-from .poller import scheduler as bg_scheduler
+from .poller import scheduler as bg_scheduler, close_http_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,6 +58,7 @@ async def startup():
 @app.on_event("shutdown")
 async def shutdown():
     bg_scheduler.shutdown(wait=False)
+    await close_http_client()
 
 
 # ── PDU Configuration endpoints ───────────────────────────────────────────────
