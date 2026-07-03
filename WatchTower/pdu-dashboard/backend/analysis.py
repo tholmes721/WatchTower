@@ -24,8 +24,20 @@ PHASE_IMBALANCE_CRITICAL_PCT = 25.0
 PF_WARNING  = 0.85
 PF_CRITICAL = 0.75
 
-VOLTAGE_NOMINAL       = 208.0
-VOLTAGE_TOLERANCE_PCT = 10.0
+# Voltage tiers — auto-detected based on measured value
+VOLTAGE_TIER_120_NOMINAL = 120.0   # North American 120V single-phase
+VOLTAGE_TIER_208_NOMINAL = 208.0   # North American 208V 3-phase L-L
+VOLTAGE_TIER_230_NOMINAL = 230.0   # International 230V single-phase
+VOLTAGE_TOLERANCE_PCT    = 10.0
+
+# Detection boundaries: if measured voltage falls within these ranges,
+# use the corresponding nominal for threshold calculations.
+# Range: (min_detect, max_detect, nominal)
+VOLTAGE_TIERS = [
+    (90.0,  145.0, VOLTAGE_TIER_120_NOMINAL),   # ~100–140V → 120V tier
+    (175.0, 225.0, VOLTAGE_TIER_208_NOMINAL),   # ~180–220V → 208V tier
+    (215.0, 265.0, VOLTAGE_TIER_230_NOMINAL),   # ~220–260V → 230V tier
+]
 
 CURRENT_HIGH_WARNING_PCT  = 80.0
 CURRENT_HIGH_CRITICAL_PCT = 90.0
@@ -211,23 +223,38 @@ def _check_voltage_anomalies(snapshot: ParsedSnapshot, alerts: List[AlertItem]):
     if not snapshot.exports("voltage_volt"):
         return
 
-    low  = VOLTAGE_NOMINAL * (1 - VOLTAGE_TOLERANCE_PCT / 100)
-    high = VOLTAGE_NOMINAL * (1 + VOLTAGE_TOLERANCE_PCT / 100)
-
     for outlet_id, outlet in snapshot.outlet_metrics.items():
         v = outlet.get("voltage_volt")
         if v is None or v == 0:
             continue
+
+        # Auto-detect voltage tier based on measured value
+        nominal = _detect_voltage_nominal(v)
+        if nominal is None:
+            # Voltage doesn't fit any known tier — flag as anomaly
+            alerts.append(AlertItem(
+                severity="warning",
+                category="voltage_anomaly",
+                title=f"Unexpected voltage on outlet {_outlet_label(outlet_id, outlet)}",
+                detail=f"Voltage = {v:.1f}V — does not match any standard tier (120V/208V/230V)",
+                outlet_id=outlet_id,
+                value=v,
+            ))
+            continue
+
+        low  = nominal * (1 - VOLTAGE_TOLERANCE_PCT / 100)
+        high = nominal * (1 + VOLTAGE_TOLERANCE_PCT / 100)
+
         if v < low or v > high:
             severity = "critical" if (v < low * 0.95 or v > high * 1.05) else "warning"
             alerts.append(AlertItem(
                 severity=severity,
                 category="voltage_anomaly",
                 title=f"Voltage out of range on outlet {_outlet_label(outlet_id, outlet)}",
-                detail=f"Voltage = {v:.1f}V (nominal {VOLTAGE_NOMINAL}V ±{VOLTAGE_TOLERANCE_PCT}%)",
+                detail=f"Voltage = {v:.1f}V (nominal {nominal:.0f}V ±{VOLTAGE_TOLERANCE_PCT}%)",
                 outlet_id=outlet_id,
                 value=v,
-                threshold=VOLTAGE_NOMINAL,
+                threshold=nominal,
             ))
 
 
@@ -376,6 +403,17 @@ def _check_environmental(snapshot: ParsedSnapshot, alerts: List[AlertItem]):
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _detect_voltage_nominal(measured_voltage: float) -> float | None:
+    """
+    Auto-detect the voltage tier based on the measured value.
+    Returns the nominal voltage (120, 208, or 230) or None if unrecognised.
+    """
+    for min_v, max_v, nominal in VOLTAGE_TIERS:
+        if min_v <= measured_voltage <= max_v:
+            return nominal
+    return None
+
 
 def _outlet_label(outlet_id: str, outlet: dict) -> str:
     name = outlet.get("outletname", "").strip()
