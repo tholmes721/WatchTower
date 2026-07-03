@@ -216,7 +216,7 @@ async function openDetailModal(pduConfigId) {
     document.getElementById('detail-title').textContent = pdu ? pdu.pdu_name : 'PDU Detail';
 
     // Populate outlet scope selector for trends
-    populateTrendScopeOptions(snap.outlet_metrics);
+    populateTrendScopeOptions(snap.outlet_metrics, snap.peripheral_metrics);
 
     // Activate first tab
     switchTab('outlets');
@@ -228,13 +228,21 @@ async function openDetailModal(pduConfigId) {
   }
 }
 
-function populateTrendScopeOptions(outletMetrics) {
+function populateTrendScopeOptions(outletMetrics, peripheralMetrics) {
   const sel = document.getElementById('trend-scope');
   sel.innerHTML = '<option value="">Inlet totals</option>';
   Object.entries(outletMetrics).sort((a,b) => +a[0]-+b[0]).forEach(([id, o]) => {
     const name = o.outletname ? ` — ${o.outletname}` : '';
-    sel.innerHTML += `<option value="${id}">Outlet ${id}${esc(name)}</option>`;
+    sel.innerHTML += `<option value="outlet:${id}">Outlet ${id}${esc(name)}</option>`;
   });
+  // Add sensor options
+  if (peripheralMetrics && Object.keys(peripheralMetrics).length) {
+    sel.innerHTML += '<option disabled>──────────</option>';
+    Object.entries(peripheralMetrics).sort((a,b) => +a[0]-+b[0]).forEach(([slot, s]) => {
+      const name = s.sensorname ? ` — ${s.sensorname}` : '';
+      sel.innerHTML += `<option value="sensor:${slot}">Sensor ${slot}${esc(name)}</option>`;
+    });
+  }
 }
 
 // ── Outlet table ──────────────────────────────────────────────────────────
@@ -527,7 +535,11 @@ async function loadTrend() {
 
   try {
     const params = new URLSearchParams({ metrics: metric, limit });
-    if (scope) params.set('outlet_id', scope);
+    if (scope.startsWith('outlet:')) {
+      params.set('outlet_id', scope.replace('outlet:', ''));
+    } else if (scope.startsWith('sensor:')) {
+      params.set('sensor_id', scope.replace('sensor:', ''));
+    }
     const data = await api('GET', `/pdus/${pduId}/trends?${params}`);
     renderTrendChart(data, metric);
   } catch (e) {
@@ -558,9 +570,13 @@ function renderTrendChart(data, metric) {
   }
 
   const palette = ['#4f8ef7', '#36d399', '#fbbd23', '#f87272', '#a855f7', '#f97316'];
+  const isTemp = metric === 'peripheral_temperature_degreecelsius';
   const datasets = data.series.map((s, i) => ({
-    label: s.label,
-    data: s.points.map(p => ({ x: new Date(p.captured_at).getTime(), y: p.value })),
+    label: metricLabel(s.metric),
+    data: s.points.map(p => ({
+      x: new Date(p.captured_at).getTime(),
+      y: isTemp ? (p.value * 9/5 + 32) : p.value,  // Convert °C to °F for display
+    })),
     borderColor: palette[i % palette.length],
     backgroundColor: palette[i % palette.length] + '22',
     borderWidth: 2,
@@ -608,13 +624,16 @@ function metricLabel(m) {
     apparentpower_voltampere: 'Apparent Power (VA)',
     powerfactor: 'Power Factor',
     currentthd_percent: 'Current THD (%)',
+    peripheral_temperature_degreecelsius: 'Temperature (°F)',
+    peripheral_relativehumidity_percent: 'Relative Humidity (%)',
   };
   return map[m] || m;
 }
 
 function metricUnit(m) {
   const map = { activepower_watt:'W', current_ampere:'A', voltage_volt:'V',
-    apparentpower_voltampere:'VA', powerfactor:'', currentthd_percent:'%' };
+    apparentpower_voltampere:'VA', powerfactor:'', currentthd_percent:'%',
+    peripheral_temperature_degreecelsius:'°F', peripheral_relativehumidity_percent:'%' };
   return map[m] || '';
 }
 

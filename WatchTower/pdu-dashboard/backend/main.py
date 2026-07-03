@@ -449,6 +449,7 @@ async def get_trends(
     pdu_id: int,
     metrics: str = Query("activepower_watt,current_ampere,voltage_volt"),
     outlet_id: Optional[str] = Query(None),
+    sensor_id: Optional[str] = Query(None),
     limit: int = Query(100, le=500),
     db: AsyncSession = Depends(get_db),
 ):
@@ -456,6 +457,7 @@ async def get_trends(
     Return time-series trend data for one PDU.
     metrics: comma-separated list of metric keys to include
     outlet_id: if provided, return per-outlet data; otherwise return inlet totals
+    sensor_id: if provided, return per-sensor environmental data
     """
     pdu = await _get_pdu_or_404(pdu_id, db)
     snap_result = await db.execute(
@@ -471,7 +473,24 @@ async def get_trends(
 
     for snap in snapshots:
         ts = snap.captured_at
-        if outlet_id:
+        if sensor_id:
+            # Environmental sensor data
+            peripherals = snap.peripheral_metrics
+            sensor = peripherals.get(sensor_id, {})
+            for metric in requested_metrics:
+                val = sensor.get(metric)
+                if val is not None:
+                    series_map[metric].append(TrendPoint(captured_at=ts, value=val))
+        elif sensor_id == "" and any(m.startswith("peripheral_") for m in requested_metrics):
+            # No specific sensor selected — aggregate all sensors
+            peripherals = snap.peripheral_metrics
+            for sensor_data in peripherals.values():
+                for metric in requested_metrics:
+                    val = sensor_data.get(metric)
+                    if val is not None:
+                        series_map[metric].append(TrendPoint(captured_at=ts, value=val))
+                break  # Only first sensor to avoid duplicates per timestamp
+        elif outlet_id:
             outlets = snap.outlet_metrics
             outlet = outlets.get(outlet_id, {})
             for metric in requested_metrics:
@@ -479,14 +498,28 @@ async def get_trends(
                 if val is not None:
                     series_map[metric].append(TrendPoint(captured_at=ts, value=val))
         else:
+            # Check if requesting peripheral metrics without a sensor_id
+            peripheral_metrics_requested = [m for m in requested_metrics if m.startswith("peripheral_")]
+            inlet_metrics_requested = [m for m in requested_metrics if not m.startswith("peripheral_")]
+
             # Inlet totals
-            for inlet in snap.inlet_metrics.values():
-                totals = inlet.get("total", {})
-                for metric in requested_metrics:
-                    val = totals.get(metric)
-                    if val is not None:
-                        series_map[metric].append(TrendPoint(captured_at=ts, value=val))
-                break  # Only first inlet
+            if inlet_metrics_requested:
+                for inlet in snap.inlet_metrics.values():
+                    totals = inlet.get("total", {})
+                    for metric in inlet_metrics_requested:
+                        val = totals.get(metric)
+                        if val is not None:
+                            series_map[metric].append(TrendPoint(captured_at=ts, value=val))
+                    break  # Only first inlet
+
+            # Peripheral data (use first sensor for each)
+            if peripheral_metrics_requested:
+                for sensor_data in snap.peripheral_metrics.values():
+                    for metric in peripheral_metrics_requested:
+                        val = sensor_data.get(metric)
+                        if val is not None:
+                            series_map[metric].append(TrendPoint(captured_at=ts, value=val))
+                    break  # Only first sensor
 
     series = [
         TrendSeries(label=m, metric=m, points=pts)
