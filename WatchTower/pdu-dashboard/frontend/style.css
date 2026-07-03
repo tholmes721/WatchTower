@@ -173,6 +173,13 @@ body {
   gap: 12px;
   margin-bottom: 16px;
   flex-wrap: wrap;
+  position: sticky;
+  top: 72px;          /* sits just below the 72px header */
+  z-index: 90;
+  background: var(--bg);
+  padding: 12px 0;
+  margin-top: -12px;
+  border-bottom: 1px solid var(--border);
 }
 
 .dash-search {
