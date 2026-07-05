@@ -55,11 +55,16 @@ function isAdmin() {
 }
 
 function applyRoleVisibility() {
-  // Hide admin-only buttons for viewers
+  // Hide admin-only buttons for viewers/demo
   const adminEls = document.querySelectorAll('.admin-only');
   adminEls.forEach(el => {
     el.style.display = isAdmin() ? '' : 'none';
   });
+  // Hide change password button for demo accounts
+  const changePwBtn = document.getElementById('btn-change-pw');
+  if (changePwBtn) {
+    changePwBtn.style.display = (state.user && state.user.role === 'demo') ? 'none' : '';
+  }
 }
 
 // ── API helpers ───────────────────────────────────────────────────────────

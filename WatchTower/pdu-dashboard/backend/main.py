@@ -110,7 +110,9 @@ async def get_me(user: User = Depends(require_auth)):
 
 @app.post("/api/auth/change-password")
 async def change_password(payload: PasswordChange, user: User = Depends(require_auth), db: AsyncSession = Depends(get_db)):
-    """Change the current user's password."""
+    """Change the current user's password. Demo accounts cannot change passwords."""
+    if user.role == "demo":
+        raise HTTPException(403, "Demo accounts cannot change passwords")
     if not verify_password(payload.current_password, user.password_hash):
         raise HTTPException(400, "Current password is incorrect")
     user.password_hash = hash_password(payload.new_password)
@@ -132,8 +134,8 @@ async def create_user(payload: UserCreate, admin: User = Depends(require_admin),
     result = await db.execute(select(User).where(User.username == payload.username))
     if result.scalar_one_or_none():
         raise HTTPException(400, f"Username '{payload.username}' already exists")
-    if payload.role not in ("admin", "viewer"):
-        raise HTTPException(400, "Role must be 'admin' or 'viewer'")
+    if payload.role not in ("admin", "viewer", "demo"):
+        raise HTTPException(400, "Role must be 'admin', 'viewer', or 'demo'")
     new_user = User(
         username=payload.username, password_hash=hash_password(payload.password),
         role=payload.role, display_name=payload.display_name,
