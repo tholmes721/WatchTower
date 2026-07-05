@@ -18,19 +18,24 @@
       </div>
     </div>
     <div class="header-right">
-      <button class="btn btn-secondary" id="btn-upload" title="Upload Prometheus export file">
+      <button class="btn btn-secondary admin-only" id="btn-upload" title="Upload Prometheus export file">
         ↑ Upload File
       </button>
-      <button class="btn btn-primary" id="btn-add-pdu" title="Configure a new PDU for polling">
+      <button class="btn btn-primary admin-only" id="btn-add-pdu" title="Configure a new PDU for polling">
         + Add PDU
       </button>
-      <button class="btn btn-secondary" id="btn-bulk-add" title="Add multiple PDUs from a list of IPs">
+      <button class="btn btn-secondary admin-only" id="btn-bulk-add" title="Add multiple PDUs from a list of IPs">
         + Bulk Add
       </button>
-      <button class="btn btn-ghost" id="btn-bulk-creds" title="Apply credentials to multiple PDUs">
+      <button class="btn btn-ghost admin-only" id="btn-bulk-creds" title="Apply credentials to multiple PDUs">
         ⚙ Bulk Credentials
       </button>
+      <button class="btn btn-ghost admin-only" id="btn-users" title="Manage user accounts">
+        👤 Users
+      </button>
       <button class="btn btn-ghost" id="btn-refresh" title="Refresh dashboard">↻ Refresh</button>
+      <span id="header-user" style="font-size:12px;color:var(--text-muted);padding:0 8px;"></span>
+      <button class="btn btn-ghost" id="btn-logout" title="Sign out">Logout</button>
     </div>
   </header>
 
@@ -359,6 +364,45 @@
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">Add All PDUs</button>
           <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- User Management modal (admin only) -->
+  <div id="modal-users" class="modal hidden">
+    <div class="modal-box">
+      <h2>User Management</h2>
+      <p class="modal-desc">Create and manage user accounts. Admins can modify PDUs; viewers have read-only access.</p>
+      <div id="users-list" style="margin-bottom:16px;"></div>
+      <h3 style="font-size:14px;font-weight:600;margin-bottom:12px;color:var(--text-muted);">Add New User</h3>
+      <form id="form-add-user">
+        <div class="form-row">
+          <div class="form-group">
+            <label>Username</label>
+            <input type="text" id="new-user-username" required autocomplete="off" />
+          </div>
+          <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="new-user-password" required autocomplete="new-password" />
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group form-group-sm">
+            <label>Role</label>
+            <select id="new-user-role">
+              <option value="viewer">Viewer (read-only)</option>
+              <option value="admin">Admin (full access)</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Display Name (optional)</label>
+            <input type="text" id="new-user-display" autocomplete="off" />
+          </div>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Create User</button>
+          <button type="button" class="btn btn-ghost modal-close">Close</button>
         </div>
       </form>
     </div>

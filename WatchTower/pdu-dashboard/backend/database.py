@@ -106,6 +106,21 @@ class Snapshot(Base):
         return set(json.loads(self.exported_families_json or "[]"))
 
 
+# ── User accounts ─────────────────────────────────────────────────────────────
+
+class User(Base):
+    """User accounts for dashboard access control."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String(64), unique=True, nullable=False, index=True)
+    password_hash = Column(String(256), nullable=False)
+    role = Column(String(16), nullable=False, default="viewer")  # 'admin' or 'viewer'
+    display_name = Column(String(128), nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    last_login_at = Column(DateTime, nullable=True)
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 async def get_db() -> AsyncSession:

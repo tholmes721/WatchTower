@@ -7,6 +7,43 @@ from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
 
 
+# ── Authentication / Users ───────────────────────────────────────────────────
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class LoginResponse(BaseModel):
+    username: str
+    role: str
+    display_name: Optional[str] = None
+
+
+class UserCreate(BaseModel):
+    username: str
+    password: str
+    role: str = "viewer"   # 'admin' or 'viewer'
+    display_name: Optional[str] = None
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    role: str
+    display_name: Optional[str] = None
+    created_at: datetime
+    last_login_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
 # ── PDU Config ───────────────────────────────────────────────────────────────
 
 class PDUConfigCreate(BaseModel):

@@ -11,12 +11,15 @@ const state = {
   outletSortCol: null,
   outletSortDir: 'asc',
   refreshTimer: null,
+  user: null,         // { username, role, display_name } or null
 };
 
 const AUTO_REFRESH_MS = 30_000;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+  // Check authentication before loading anything
+  await checkAuth();
   bindHeaderButtons();
   bindDashboardSearch();
   bindModalClose();
@@ -24,9 +27,40 @@ document.addEventListener('DOMContentLoaded', () => {
   bindOutletTableControls();
   bindTrendControls();
   bindFormSubmits();
+  applyRoleVisibility();
   loadDashboard();
   state.refreshTimer = setInterval(loadDashboard, AUTO_REFRESH_MS);
 });
+
+// ── Auth check ────────────────────────────────────────────────────────────
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/auth/me');
+    if (!res.ok) throw new Error('Not authenticated');
+    state.user = await res.json();
+    // Show username in header
+    const userEl = document.getElementById('header-user');
+    if (userEl) {
+      userEl.textContent = state.user.display_name || state.user.username;
+      userEl.title = `${state.user.username} (${state.user.role})`;
+    }
+  } catch (e) {
+    // Not logged in — redirect to login page
+    window.location.href = '/login';
+  }
+}
+
+function isAdmin() {
+  return state.user && state.user.role === 'admin';
+}
+
+function applyRoleVisibility() {
+  // Hide admin-only buttons for viewers
+  const adminEls = document.querySelectorAll('.admin-only');
+  adminEls.forEach(el => {
+    el.style.display = isAdmin() ? '' : 'none';
+  });
+}
 
 // ── API helpers ───────────────────────────────────────────────────────────
 async function api(method, path, body) {
@@ -36,6 +70,11 @@ async function api(method, path, body) {
     body: body instanceof FormData ? body : body ? JSON.stringify(body) : undefined,
   };
   const res = await fetch('/api' + path, opts);
+  if (res.status === 401) {
+    // Session expired — redirect to login
+    window.location.href = '/login';
+    throw new Error('Session expired');
+  }
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(err.detail || res.statusText);
@@ -190,9 +229,9 @@ function renderPduCard(d) {
       <div class="poll-status">${pollHtml}</div>
       <div class="card-actions">
         <button class="btn btn-secondary btn-sm" onclick="openDetailModal(${d.pdu_config_id})">Detail</button>
-        <button class="btn btn-secondary btn-sm" onclick="openEditPduModal(${d.pdu_config_id})">Edit</button>
+        ${isAdmin() ? `<button class="btn btn-secondary btn-sm" onclick="openEditPduModal(${d.pdu_config_id})">Edit</button>
         <button class="btn btn-ghost btn-sm" onclick="pollNow(${d.pdu_config_id})" title="Poll now">↻</button>
-        <button class="btn btn-danger btn-sm" onclick="openDeletePduModal(${d.pdu_config_id})" title="Delete this PDU">🗑</button>
+        <button class="btn btn-danger btn-sm" onclick="openDeletePduModal(${d.pdu_config_id})" title="Delete this PDU">🗑</button>` : ''}
       </div>
     </div>
   </div>`;
@@ -736,6 +775,15 @@ function bindHeaderButtons() {
   document.getElementById('btn-bulk-add').addEventListener('click', openBulkAddModal);
   document.getElementById('btn-bulk-creds').addEventListener('click', openBulkCredsModal);
   document.getElementById('btn-refresh').addEventListener('click', loadDashboard);
+  document.getElementById('btn-logout').addEventListener('click', doLogout);
+  const btnUsers = document.getElementById('btn-users');
+  if (btnUsers) btnUsers.addEventListener('click', openUsersModal);
+}
+
+async function doLogout() {
+  await fetch('/api/auth/logout', { method: 'POST' });
+  localStorage.removeItem('watchtower_user');
+  window.location.href = '/login';
 }
 
 // ── Dashboard search & filter ─────────────────────────────────────────────
@@ -901,6 +949,7 @@ function bindFormSubmits() {
   document.getElementById('form-pdu').addEventListener('submit', handleSavePdu);
   document.getElementById('form-bulk').addEventListener('submit', handleBulkCreds);
   document.getElementById('form-bulk-add').addEventListener('submit', handleBulkAdd);
+  document.getElementById('form-add-user').addEventListener('submit', handleAddUser);
   document.getElementById('btn-confirm-delete-pdu').addEventListener('click', confirmDeletePdu);
 }
 
@@ -1038,6 +1087,69 @@ function showGlobalAlert(type, msg) {
   if (_alertTimer) clearTimeout(_alertTimer);
   _alertTimer = setTimeout(() => el.classList.add('hidden'), 6000);
 }
+
+// ── User management modal (admin) ─────────────────────────────────────────
+async function openUsersModal() {
+  await loadUsersList();
+  document.getElementById('form-add-user').reset();
+  openModal('modal-users');
+}
+
+async function loadUsersList() {
+  try {
+    const users = await api('GET', '/users');
+    const container = document.getElementById('users-list');
+    if (!users.length) {
+      container.innerHTML = '<span style="color:var(--text-muted)">No users found.</span>';
+      return;
+    }
+    container.innerHTML = `<div class="table-wrap"><table class="data-table">
+      <thead><tr><th>Username</th><th>Display Name</th><th>Role</th><th>Last Login</th><th></th></tr></thead>
+      <tbody>${users.map(u => `<tr>
+        <td>${esc(u.username)}</td>
+        <td>${esc(u.display_name || '—')}</td>
+        <td><span class="badge ${u.role === 'admin' ? 'badge-critical' : 'badge-ok'}">${u.role}</span></td>
+        <td>${u.last_login_at ? timeAgo(u.last_login_at) : 'Never'}</td>
+        <td><button class="btn btn-danger btn-sm" onclick="deleteUser(${u.id}, '${esc(u.username)}')">Delete</button></td>
+      </tr>`).join('')}</tbody>
+    </table></div>`;
+  } catch (e) {
+    document.getElementById('users-list').innerHTML = `<span style="color:var(--red)">${esc(e.message)}</span>`;
+  }
+}
+
+async function handleAddUser(e) {
+  e.preventDefault();
+  const payload = {
+    username: document.getElementById('new-user-username').value.trim(),
+    password: document.getElementById('new-user-password').value,
+    role: document.getElementById('new-user-role').value,
+    display_name: document.getElementById('new-user-display').value.trim() || null,
+  };
+  try {
+    setButtonLoading(e.submitter, true);
+    await api('POST', '/users', payload);
+    showGlobalAlert('success', `User '${payload.username}' created.`);
+    document.getElementById('form-add-user').reset();
+    await loadUsersList();
+  } catch (err) {
+    showGlobalAlert('error', 'Failed to create user: ' + err.message);
+  } finally {
+    setButtonLoading(e.submitter, false);
+  }
+}
+
+async function deleteUser(userId, username) {
+  if (!confirm(`Delete user "${username}"? This cannot be undone.`)) return;
+  try {
+    await api('DELETE', `/users/${userId}`);
+    showGlobalAlert('success', `User '${username}' deleted.`);
+    await loadUsersList();
+  } catch (err) {
+    showGlobalAlert('error', 'Failed to delete user: ' + err.message);
+  }
+}
+
 
 // ── Utility / formatting ──────────────────────────────────────────────────
 function pduWebUrl(dashboardItem) {
