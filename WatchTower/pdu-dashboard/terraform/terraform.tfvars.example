@@ -1,0 +1,19 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Example terraform.tfvars — copy to terraform.tfvars and customize
+# ─────────────────────────────────────────────────────────────────────────────
+
+aws_region     = "us-east-1"
+project_name   = "watchtower"
+
+# Restrict ALB access to your IP (recommended), or use ["0.0.0.0/0"] for public
+allowed_cidr_blocks = ["0.0.0.0/0"]
+
+# Fargate sizing — 0.5 vCPU / 1 GB is plenty for 1000+ PDUs
+task_cpu    = "512"
+task_memory = "1024"
+
+# Always 1 for SQLite (no concurrent writers)
+desired_count = 1
+
+# Generate with: openssl rand -hex 32
+session_secret = "CHANGE_ME_generate_with_openssl_rand_hex_32"
