@@ -35,6 +35,7 @@
       </button>
       <button class="btn btn-ghost" id="btn-refresh" title="Refresh dashboard">↻ Refresh</button>
       <span id="header-user" style="font-size:12px;color:var(--text-muted);padding:0 8px;"></span>
+      <button class="btn btn-ghost" id="btn-change-pw" title="Change your password">🔑</button>
       <button class="btn btn-ghost" id="btn-logout" title="Sign out">Logout</button>
     </div>
   </header>
@@ -363,6 +364,32 @@
         </div>
         <div class="form-actions">
           <button type="submit" class="btn btn-primary">Add All PDUs</button>
+          <button type="button" class="btn btn-ghost modal-close">Cancel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Change Password modal -->
+  <div id="modal-change-pw" class="modal hidden">
+    <div class="modal-box modal-box-sm">
+      <h2>Change Password</h2>
+      <p class="modal-desc">Enter your current password and choose a new one.</p>
+      <form id="form-change-pw">
+        <div class="form-group">
+          <label>Current Password</label>
+          <input type="password" id="pw-current" required autocomplete="current-password" />
+        </div>
+        <div class="form-group">
+          <label>New Password</label>
+          <input type="password" id="pw-new" required autocomplete="new-password" minlength="4" />
+        </div>
+        <div class="form-group">
+          <label>Confirm New Password</label>
+          <input type="password" id="pw-confirm" required autocomplete="new-password" minlength="4" />
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary">Update Password</button>
           <button type="button" class="btn btn-ghost modal-close">Cancel</button>
         </div>
       </form>

@@ -775,6 +775,7 @@ function bindHeaderButtons() {
   document.getElementById('btn-bulk-add').addEventListener('click', openBulkAddModal);
   document.getElementById('btn-bulk-creds').addEventListener('click', openBulkCredsModal);
   document.getElementById('btn-refresh').addEventListener('click', loadDashboard);
+  document.getElementById('btn-change-pw').addEventListener('click', openChangePwModal);
   document.getElementById('btn-logout').addEventListener('click', doLogout);
   const btnUsers = document.getElementById('btn-users');
   if (btnUsers) btnUsers.addEventListener('click', openUsersModal);
@@ -784,6 +785,42 @@ async function doLogout() {
   await fetch('/api/auth/logout', { method: 'POST' });
   localStorage.removeItem('watchtower_user');
   window.location.href = '/login';
+}
+
+// ── Change password modal ─────────────────────────────────────────────────
+function openChangePwModal() {
+  document.getElementById('form-change-pw').reset();
+  openModal('modal-change-pw');
+}
+
+async function handleChangePw(e) {
+  e.preventDefault();
+  const current = document.getElementById('pw-current').value;
+  const newPw = document.getElementById('pw-new').value;
+  const confirm = document.getElementById('pw-confirm').value;
+
+  if (newPw !== confirm) {
+    showGlobalAlert('error', 'New passwords do not match.');
+    return;
+  }
+  if (newPw.length < 4) {
+    showGlobalAlert('error', 'Password must be at least 4 characters.');
+    return;
+  }
+
+  try {
+    setButtonLoading(e.submitter, true);
+    await api('POST', '/auth/change-password', {
+      current_password: current,
+      new_password: newPw,
+    });
+    closeAllModals();
+    showGlobalAlert('success', 'Password changed successfully.');
+  } catch (err) {
+    showGlobalAlert('error', 'Failed to change password: ' + err.message);
+  } finally {
+    setButtonLoading(e.submitter, false);
+  }
 }
 
 // ── Dashboard search & filter ─────────────────────────────────────────────
@@ -950,6 +987,7 @@ function bindFormSubmits() {
   document.getElementById('form-bulk').addEventListener('submit', handleBulkCreds);
   document.getElementById('form-bulk-add').addEventListener('submit', handleBulkAdd);
   document.getElementById('form-add-user').addEventListener('submit', handleAddUser);
+  document.getElementById('form-change-pw').addEventListener('submit', handleChangePw);
   document.getElementById('btn-confirm-delete-pdu').addEventListener('click', confirmDeletePdu);
 }
 
