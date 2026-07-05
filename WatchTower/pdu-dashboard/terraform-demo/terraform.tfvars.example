@@ -1,0 +1,19 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Example terraform.tfvars — copy to terraform.tfvars and customize
+# ─────────────────────────────────────────────────────────────────────────────
+
+aws_region    = "us-east-1"
+project_name  = "watchtower"
+instance_type = "t3.micro"    # Free-tier eligible for first 12 months
+
+# Your SSH public key (paste contents of ~/.ssh/id_rsa.pub)
+ssh_public_key = "ssh-rsa AAAA... your-key-here"
+
+# Restrict SSH to your IP (find yours at: https://whatismyip.com)
+allowed_cidr_blocks = ["0.0.0.0/0"]
+
+# Set to true if you want a fixed IP that doesn't change on stop/start ($3.60/mo extra)
+use_elastic_ip = false
+
+# Generate with: openssl rand -hex 32
+session_secret = "CHANGE_ME_generate_with_openssl_rand_hex_32"
