@@ -158,6 +158,8 @@ body {
   position: sticky;
   top: 72px;
   z-index: 99;
+  width: 100%;
+  display: block;
 }
 
 /* ── Main layout ─────────────────────────────────────────────────────────── */
