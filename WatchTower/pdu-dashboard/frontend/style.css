@@ -147,6 +147,19 @@ body {
 .btn-sm        { padding: 4px 10px; font-size: 12px; }
 .btn:disabled  { opacity: 0.5; cursor: not-allowed; }
 
+/* ── Classification banner ────────────────────────────────────────────────── */
+.classification-banner {
+  text-align: center;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  padding: 4px 12px;
+  position: sticky;
+  top: 72px;
+  z-index: 99;
+}
+
 /* ── Main layout ─────────────────────────────────────────────────────────── */
 .app-main {
   padding: 24px;

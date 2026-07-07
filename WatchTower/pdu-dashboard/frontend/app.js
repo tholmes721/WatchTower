@@ -18,6 +18,8 @@ const AUTO_REFRESH_MS = 30_000;
 
 // ── Boot ──────────────────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', async () => {
+  // Load banner first (shown even on login page context)
+  await loadBanner();
   // Check authentication before loading anything
   await checkAuth();
   bindHeaderButtons();
@@ -31,6 +33,35 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadDashboard();
   state.refreshTimer = setInterval(loadDashboard, AUTO_REFRESH_MS);
 });
+
+// ── Banner ────────────────────────────────────────────────────────────────
+async function loadBanner() {
+  try {
+    const res = await fetch('/api/banner');
+    if (!res.ok) return;
+    const config = await res.json();
+    if (!config.enabled || !config.text) return;
+
+    const el = document.getElementById('classification-banner');
+    if (!el) return;
+
+    el.textContent = config.text;
+    el.style.backgroundColor = config.color || '#4f8ef7';
+    el.style.color = config.text_color || '#ffffff';
+    el.classList.remove('hidden');
+
+    // Adjust sticky toolbar position to account for banner height
+    requestAnimationFrame(() => {
+      const bannerHeight = el.offsetHeight;
+      const toolbar = document.querySelector('.dash-toolbar');
+      if (toolbar) {
+        toolbar.style.top = (72 + bannerHeight) + 'px';
+      }
+    });
+  } catch (e) {
+    // Banner is non-critical — silently ignore errors
+  }
+}
 
 // ── Auth check ────────────────────────────────────────────────────────────
 async function checkAuth() {

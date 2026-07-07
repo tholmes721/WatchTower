@@ -529,6 +529,20 @@ def _snapshot_to_detail(snap: Snapshot) -> SnapshotDetail:
 # ── Static files (frontend) ───────────────────────────────────────────────────
 
 _frontend_dir = os.path.join(os.path.dirname(__file__), "..", "frontend")
+_banner_config_path = os.path.join(os.path.dirname(__file__), "..", "banner.json")
+
+
+@app.get("/api/banner")
+async def get_banner():
+    """Return banner configuration (no auth required — displayed on login page too)."""
+    if not os.path.isfile(_banner_config_path):
+        return {"enabled": False}
+    try:
+        with open(_banner_config_path, "r") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {"enabled": False}
+
 
 if os.path.isdir(_frontend_dir):
     app.mount("/static", StaticFiles(directory=_frontend_dir), name="static")

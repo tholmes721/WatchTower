@@ -68,6 +68,9 @@
   </style>
 </head>
 <body>
+  <!-- Classification banner -->
+  <div id="classification-banner" class="classification-banner hidden"></div>
+
   <div class="login-page">
     <div class="login-card">
       <div class="login-logo">
@@ -121,6 +124,20 @@
         btn.textContent = 'Sign In';
       }
     });
+    // Load classification banner
+    (async () => {
+      try {
+        const res = await fetch('/api/banner');
+        if (!res.ok) return;
+        const config = await res.json();
+        if (!config.enabled || !config.text) return;
+        const el = document.getElementById('classification-banner');
+        el.textContent = config.text;
+        el.style.backgroundColor = config.color || '#4f8ef7';
+        el.style.color = config.text_color || '#ffffff';
+        el.classList.remove('hidden');
+      } catch (e) {}
+    })();
     // If already logged in, redirect to dashboard
     (async () => {
       try {
