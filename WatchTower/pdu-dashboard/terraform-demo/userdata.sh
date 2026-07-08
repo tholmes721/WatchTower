@@ -40,7 +40,7 @@ services:
   watchtower:
     build: .
     ports:
-      - "8000:8000"
+      - "80:8000"
     volumes:
       - watchtower-data:/app/data
     env_file:
