@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 # Maximum number of PDUs being scraped simultaneously.
 # Each scrape can take up to 60s on slow devices, so this limits how many
 # connections are open at once. Adjust based on available memory/bandwidth.
-MAX_CONCURRENT_SCRAPES = 50
+MAX_CONCURRENT_SCRAPES = 100
 
 # HTTP timeout for individual PDU scrapes.
 # Raritan PDUs can take 20-30s to collect and export metrics on busy devices.
@@ -42,8 +42,8 @@ SCRAPE_TIMEOUT_SECONDS = 60.0
 # Connection pool limits for the shared httpx client.
 # max_connections: total connections across all hosts
 # max_keepalive_connections: idle connections kept warm for reuse
-MAX_CONNECTIONS = 100
-MAX_KEEPALIVE_CONNECTIONS = 50
+MAX_CONNECTIONS = 200
+MAX_KEEPALIVE_CONNECTIONS = 100
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -203,10 +203,13 @@ async def scrape_pdu(pdu_config_id: int):
             logger.info("Scraped PDU %s — snapshot id %s", config.name, snapshot.id)
 
 
-def schedule_pdu(config: PDUConfigModel):
+def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
     """
     Add or update a polling job for a PDU config.
     Uses staggered scheduling to spread polls across the interval window.
+
+    If immediate=True, fires the first poll right away (used when a new PDU
+    is added so you don't have to manually hit "poll now").
     """
     job_id = f"pdu_{config.id}"
     existing = scheduler.get_job(job_id)
@@ -214,12 +217,16 @@ def schedule_pdu(config: PDUConfigModel):
         existing.remove()
 
     if config.polling_enabled:
-        # Calculate a stagger offset so PDUs don't all fire at the same moment
-        offset_seconds = _stagger_offset(config.id, config.poll_interval_seconds)
-
-        # jitter_seconds adds ±10% randomness on top of the stagger to further
-        # smooth out bursts when many PDUs are added simultaneously
+        # jitter adds randomness to smooth out bursts
         jitter = int(config.poll_interval_seconds * 0.05)  # 5% jitter
+
+        if immediate:
+            # First poll fires immediately, then regular interval after that
+            first_run = datetime.utcnow() + timedelta(seconds=2)  # 2s grace for DB commit
+        else:
+            # Stagger offset distributes PDUs across the interval window
+            offset_seconds = _stagger_offset(config.id, config.poll_interval_seconds)
+            first_run = datetime.utcnow() + timedelta(seconds=offset_seconds)
 
         scheduler.add_job(
             scrape_pdu,
@@ -232,13 +239,14 @@ def schedule_pdu(config: PDUConfigModel):
             replace_existing=True,
             max_instances=1,
             coalesce=True,
-            # Stagger the first run: next_run_time = now + offset
-            next_run_time=datetime.utcnow() + timedelta(seconds=offset_seconds),
+            next_run_time=first_run,
         )
         _job_map[config.id] = job_id
         logger.info(
-            "Scheduled polling for PDU %s every %ss (stagger offset: %ds, jitter: ±%ds)",
-            config.name, config.poll_interval_seconds, offset_seconds, jitter
+            "Scheduled polling for PDU %s every %ss (first poll: %s, jitter: ±%ds)",
+            config.name, config.poll_interval_seconds,
+            "immediate" if immediate else f"staggered {_stagger_offset(config.id, config.poll_interval_seconds)}s",
+            jitter
         )
     else:
         _job_map.pop(config.id, None)

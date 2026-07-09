@@ -188,7 +188,7 @@ async def create_pdu(config: PDUConfigCreate, admin: User = Depends(require_admi
     db.add(pdu)
     await db.commit()
     await db.refresh(pdu)
-    schedule_pdu(pdu)
+    schedule_pdu(pdu, immediate=True)
     return pdu
 
 
@@ -266,7 +266,7 @@ async def bulk_add_pdus(payload: BulkPDUAdd, admin: User = Depends(require_admin
     await db.commit()
     for pdu in created:
         await db.refresh(pdu)
-        schedule_pdu(pdu)
+        schedule_pdu(pdu, immediate=True)
     return BulkPDUAddResponse(created=created, skipped=skipped)
 
 
