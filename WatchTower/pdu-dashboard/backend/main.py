@@ -47,7 +47,7 @@ from .models import (
 )
 from .parser import parse_prometheus_text
 from .poller import reload_all_schedules, schedule_pdu, scrape_pdu, unschedule_pdu
-from .poller import scheduler as bg_scheduler, close_http_client
+from .poller import start_polling, stop_polling, close_http_client
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,14 +65,14 @@ app = FastAPI(
 async def startup():
     await init_db()
     await ensure_default_admin()
-    bg_scheduler.start()
     await reload_all_schedules()
+    start_polling()
     logger.info("PDU Dashboard started")
 
 
 @app.on_event("shutdown")
 async def shutdown():
-    bg_scheduler.shutdown(wait=False)
+    stop_polling()
     await close_http_client()
 
 

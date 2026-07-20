@@ -1,10 +1,14 @@
 """
 Background polling engine.
-Uses APScheduler to periodically scrape each enabled PDU's Prometheus endpoint.
+Uses a simple asyncio task loop to periodically scrape each enabled PDU.
+
+Replaced APScheduler with native asyncio for compatibility with Python 3.12+
+where the asyncio policy system is deprecated and APScheduler's
+AsyncIOScheduler may fail to properly attach to the event loop.
 
 Scalability features (designed for 1000+ PDU environments):
 - Semaphore-based concurrency limiter prevents overwhelming the network
-- Staggered scheduling spreads PDUs across the poll interval window
+- Staggered initial polling spreads PDUs across the first 60 seconds
 - Shared httpx client with connection pooling for efficiency
 - Extended timeouts for slow PDUs that take up to 30s to export metrics
 """
@@ -13,11 +17,9 @@ import asyncio
 import hashlib
 import logging
 from datetime import datetime, timedelta
-from typing import Dict, Optional
+from typing import Dict, Optional, Set
 
 import httpx
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import select, delete, desc
 
 from .database import AsyncSessionLocal
@@ -29,42 +31,27 @@ import json
 logger = logging.getLogger(__name__)
 
 # ── Scalability configuration ────────────────────────────────────────────────
-# Maximum number of PDUs being scraped simultaneously.
-# Each scrape can take up to 60s on slow devices, so this limits how many
-# connections are open at once. Adjust based on available memory/bandwidth.
 MAX_CONCURRENT_SCRAPES = 100
-
-# HTTP timeout for individual PDU scrapes.
-# Raritan PDUs can take 20-30s to collect and export metrics on busy devices.
-# Set generously to avoid premature timeouts.
 SCRAPE_TIMEOUT_SECONDS = 60.0
-
-# Connection pool limits for the shared httpx client.
-# max_connections: total connections across all hosts
-# max_keepalive_connections: idle connections kept warm for reuse
 MAX_CONNECTIONS = 200
 MAX_KEEPALIVE_CONNECTIONS = 100
-
-# Maximum number of snapshots to retain per PDU.
-# Older snapshots are automatically deleted after each successful poll.
 MAX_SNAPSHOTS_PER_PDU = 100
-
 # ─────────────────────────────────────────────────────────────────────────────
 
-scheduler = AsyncIOScheduler()
-
-# Track job IDs keyed by PDU config id
-_job_map: Dict[int, str] = {}
-
-# Semaphore limits concurrent scrapes — prevents connection pile-up
+# Semaphore limits concurrent scrapes
 _scrape_semaphore: Optional[asyncio.Semaphore] = None
 
-# Shared httpx client — reuses connections across scrapes for efficiency
+# Shared httpx client
 _http_client: Optional[httpx.AsyncClient] = None
+
+# Background polling task handle
+_polling_task: Optional[asyncio.Task] = None
+
+# Set of PDU config IDs that need an immediate poll (newly added)
+_immediate_poll_queue: Set[int] = set()
 
 
 def _get_semaphore() -> asyncio.Semaphore:
-    """Lazily create the semaphore (must be created inside a running event loop)."""
     global _scrape_semaphore
     if _scrape_semaphore is None:
         _scrape_semaphore = asyncio.Semaphore(MAX_CONCURRENT_SCRAPES)
@@ -72,7 +59,6 @@ def _get_semaphore() -> asyncio.Semaphore:
 
 
 def _get_http_client() -> httpx.AsyncClient:
-    """Lazily create the shared httpx client with connection pooling."""
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(
@@ -92,7 +78,6 @@ def _get_http_client() -> httpx.AsyncClient:
 
 
 async def close_http_client():
-    """Gracefully close the shared client (call on app shutdown)."""
     global _http_client
     if _http_client and not _http_client.is_closed:
         await _http_client.aclose()
@@ -104,32 +89,13 @@ def get_metrics_url(config: PDUConfigModel) -> str:
     return f"{scheme}://{config.host}:{config.port}/cgi-bin/dump_prometheus.cgi?include_names=1"
 
 
-def _stagger_offset(pdu_config_id: int, interval_seconds: int) -> int:
-    """
-    Calculate a deterministic stagger offset for a PDU within its poll interval.
-
-    Uses a hash of the PDU's config ID to evenly distribute start times across
-    the interval window. This ensures that even if 1000 PDUs all have the same
-    300s interval, their first polls are spread across those 300 seconds rather
-    than all firing at t=0.
-
-    Returns offset in seconds (0 to interval_seconds-1).
-    """
-    # Hash the config ID to get a stable, well-distributed number
-    h = hashlib.md5(str(pdu_config_id).encode()).hexdigest()
-    hash_int = int(h[:8], 16)  # First 8 hex chars = 32 bits
-    return hash_int % interval_seconds
-
+# ── Scrape function ──────────────────────────────────────────────────────────
 
 async def scrape_pdu(pdu_config_id: int):
-    """
-    Fetch metrics from a single PDU and store as a new snapshot.
-    Uses a semaphore to limit concurrent scrapes across all PDUs.
-    """
+    """Fetch metrics from a single PDU and store as a new snapshot."""
     sem = _get_semaphore()
 
     async with sem:
-        # Log when a scrape starts
         logger.info("Scraping PDU config %d (slots in use: %d/%d)",
                     pdu_config_id, MAX_CONCURRENT_SCRAPES - sem._value, MAX_CONCURRENT_SCRAPES)
 
@@ -139,10 +105,10 @@ async def scrape_pdu(pdu_config_id: int):
             )
             config = result.scalar_one_or_none()
             if config is None:
-                logger.warning("PDU config %d no longer exists, skipping scrape", pdu_config_id)
+                logger.warning("PDU config %d no longer exists, skipping", pdu_config_id)
                 return
             if not config.polling_enabled:
-                logger.debug("PDU %s polling disabled, skipping scrape", config.name)
+                logger.debug("PDU %s polling disabled, skipping", config.name)
                 return
 
             url = get_metrics_url(config)
@@ -150,12 +116,10 @@ async def scrape_pdu(pdu_config_id: int):
                 auth = None
                 if config.username:
                     auth = (config.username, config.password or "")
-
                 client = _get_http_client()
                 response = await client.get(url, auth=auth)
                 response.raise_for_status()
                 text = response.text
-
             except httpx.TimeoutException:
                 logger.warning("Timeout scraping PDU %s (%s) after %ds",
                                config.name, url, SCRAPE_TIMEOUT_SECONDS)
@@ -187,11 +151,10 @@ async def scrape_pdu(pdu_config_id: int):
             )
             db.add(snapshot)
 
-            # Backfill discovered device info onto the config if not already set
+            # Backfill discovered device info
             changed = False
             if parsed.pdu_name and config.discovered_name != parsed.pdu_name:
                 config.discovered_name = parsed.pdu_name
-                # Also update the display name if it's still the host placeholder
                 if config.name == config.host:
                     config.name = parsed.pdu_name
                 changed = True
@@ -210,7 +173,7 @@ async def scrape_pdu(pdu_config_id: int):
             await db.commit()
             logger.info("Scraped PDU %s — snapshot id %s", config.name, snapshot.id)
 
-            # ── Retention: delete old snapshots beyond MAX_SNAPSHOTS_PER_PDU ──
+            # Retention: delete old snapshots beyond MAX_SNAPSHOTS_PER_PDU
             count_result = await db.execute(
                 select(Snapshot.id)
                 .where(Snapshot.pdu_config_id == config.id)
@@ -227,93 +190,120 @@ async def scrape_pdu(pdu_config_id: int):
                             len(old_ids), config.name, MAX_SNAPSHOTS_PER_PDU)
 
 
+# ── Background polling loop ──────────────────────────────────────────────────
+
+async def _polling_loop():
+    """
+    Main background loop that runs forever.
+    Every 30 seconds, checks which PDUs are due for a poll and scrapes them.
+    """
+    logger.info("Background polling loop started.")
+
+    # Track last poll time per PDU
+    last_polled: Dict[int, datetime] = {}
+
+    # Initial stagger: spread first polls across 60 seconds
+    startup_time = datetime.utcnow()
+
+    while True:
+        try:
+            # Process immediate poll queue first (newly added PDUs)
+            immediate_ids = list(_immediate_poll_queue)
+            _immediate_poll_queue.clear()
+            if immediate_ids:
+                tasks = [asyncio.create_task(scrape_pdu(pid)) for pid in immediate_ids]
+                await asyncio.gather(*tasks, return_exceptions=True)
+                for pid in immediate_ids:
+                    last_polled[pid] = datetime.utcnow()
+
+            # Load all enabled PDU configs
+            async with AsyncSessionLocal() as db:
+                result = await db.execute(
+                    select(PDUConfigModel).where(PDUConfigModel.polling_enabled == True)
+                )
+                configs = result.scalars().all()
+
+            now = datetime.utcnow()
+            due_for_poll = []
+
+            for config in configs:
+                # Skip if already handled as immediate
+                if config.id in immediate_ids:
+                    continue
+
+                last = last_polled.get(config.id)
+                if last is None:
+                    # Never polled — apply stagger offset (max 60s from startup)
+                    h = hashlib.md5(str(config.id).encode()).hexdigest()
+                    offset = int(h[:8], 16) % 60
+                    stagger_until = startup_time + timedelta(seconds=offset)
+                    if now >= stagger_until:
+                        due_for_poll.append(config.id)
+                else:
+                    # Check if interval has elapsed
+                    elapsed = (now - last).total_seconds()
+                    if elapsed >= config.poll_interval_seconds:
+                        due_for_poll.append(config.id)
+
+            # Fire all due polls concurrently (semaphore limits actual concurrency)
+            if due_for_poll:
+                logger.info("Polling %d PDUs this cycle", len(due_for_poll))
+                tasks = [asyncio.create_task(scrape_pdu(pid)) for pid in due_for_poll]
+                await asyncio.gather(*tasks, return_exceptions=True)
+                for pid in due_for_poll:
+                    last_polled[pid] = datetime.utcnow()
+
+        except Exception as exc:
+            logger.error("Error in polling loop: %s", exc)
+
+        # Check every 15 seconds
+        await asyncio.sleep(15)
+
+
+# ── Public API (called from main.py) ─────────────────────────────────────────
+
 def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
     """
-    Add or update a polling job for a PDU config.
-    Uses staggered scheduling to spread polls across the interval window.
-
-    If immediate=True, fires the first poll right away (used when a new PDU
-    is added so you don't have to manually hit "poll now").
+    Mark a PDU for polling. If immediate=True, it will be polled on the
+    next loop cycle (within ~15 seconds).
     """
-    job_id = f"pdu_{config.id}"
-    existing = scheduler.get_job(job_id)
-    if existing:
-        existing.remove()
-
-    if config.polling_enabled:
-        # jitter adds randomness to smooth out bursts
-        jitter = int(config.poll_interval_seconds * 0.05)  # 5% jitter
-
-        if immediate:
-            # First poll fires immediately, then regular interval after that
-            first_run = datetime.utcnow() + timedelta(seconds=2)  # 2s grace for DB commit
-        else:
-            # Stagger offset distributes PDUs across the first 60 seconds
-            # (capped to avoid long waits on startup with large intervals)
-            max_stagger = min(60, config.poll_interval_seconds)
-            offset_seconds = _stagger_offset(config.id, max_stagger)
-            first_run = datetime.utcnow() + timedelta(seconds=offset_seconds)
-
-        scheduler.add_job(
-            scrape_pdu,
-            trigger=IntervalTrigger(
-                seconds=config.poll_interval_seconds,
-                jitter=jitter,
-            ),
-            id=job_id,
-            args=[config.id],
-            replace_existing=True,
-            max_instances=1,
-            coalesce=True,
-            next_run_time=first_run,
-        )
-        _job_map[config.id] = job_id
-        logger.info(
-            "Scheduled polling for PDU %s every %ss (first poll in %ds, jitter: ±%ds)",
-            config.name, config.poll_interval_seconds,
-            int((first_run - datetime.utcnow()).total_seconds()),
-            jitter
-        )
+    if config.polling_enabled and immediate:
+        _immediate_poll_queue.add(config.id)
+        logger.info("Queued immediate poll for PDU %s", config.name)
+    elif config.polling_enabled:
+        logger.info("PDU %s scheduled for polling every %ds", config.name, config.poll_interval_seconds)
     else:
-        _job_map.pop(config.id, None)
         logger.info("Polling disabled for PDU %s", config.name)
 
 
 def unschedule_pdu(pdu_config_id: int):
-    job_id = f"pdu_{pdu_config_id}"
-    job = scheduler.get_job(job_id)
-    if job:
-        job.remove()
-    _job_map.pop(pdu_config_id, None)
+    """Remove a PDU from the immediate queue (if present)."""
+    _immediate_poll_queue.discard(pdu_config_id)
+
+
+def start_polling():
+    """Start the background polling task. Call from app startup."""
+    global _polling_task
+    _polling_task = asyncio.create_task(_polling_loop())
+    logger.info("Polling engine started (max concurrent: %d, timeout: %ds)",
+                MAX_CONCURRENT_SCRAPES, SCRAPE_TIMEOUT_SECONDS)
+
+
+def stop_polling():
+    """Stop the background polling task. Call from app shutdown."""
+    global _polling_task
+    if _polling_task and not _polling_task.done():
+        _polling_task.cancel()
+        logger.info("Polling engine stopped")
 
 
 async def reload_all_schedules():
-    """Called at startup to reinstate schedules from DB."""
+    """Called at startup to log the initial state."""
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(PDUConfigModel))
         configs = result.scalars().all()
-        enabled_count = 0
-        for config in configs:
-            schedule_pdu(config)
-            if config.polling_enabled:
-                enabled_count += 1
+        enabled_count = sum(1 for c in configs if c.polling_enabled)
     logger.info(
-        "Loaded %d PDU schedules (%d enabled, max concurrent: %d, timeout: %ds)",
-        len(configs), enabled_count, MAX_CONCURRENT_SCRAPES, SCRAPE_TIMEOUT_SECONDS
+        "Found %d PDUs (%d with polling enabled, interval check every 15s)",
+        len(configs), enabled_count
     )
-    # Log the next few scheduled jobs for verification
-    jobs = scheduler.get_jobs()
-    if jobs:
-        next_jobs = sorted(jobs, key=lambda j: j.next_run_time or datetime.max)[:5]
-        for job in next_jobs:
-            logger.info("  Next scheduled: %s at %s", job.id, job.next_run_time)
-    # Confirm event loop is alive by scheduling a one-shot verification
-    scheduler.add_job(
-        _verify_scheduler_running, id="_verify", replace_existing=True,
-        next_run_time=datetime.utcnow() + timedelta(seconds=5),
-    )
-
-
-async def _verify_scheduler_running():
-    """One-shot job that confirms the scheduler event loop is working."""
-    logger.info("Scheduler verification: event loop is alive and jobs are firing.")
