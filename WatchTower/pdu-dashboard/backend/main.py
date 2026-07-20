@@ -459,10 +459,11 @@ async def get_trends(
 ):
     """Return time-series trend data for one PDU."""
     pdu = await _get_pdu_or_404(pdu_id, db)
+    # Get the most RECENT snapshots, then reverse to chronological order for charting
     snap_result = await db.execute(
-        select(Snapshot).where(Snapshot.pdu_config_id == pdu_id).order_by(Snapshot.captured_at).limit(limit)
+        select(Snapshot).where(Snapshot.pdu_config_id == pdu_id).order_by(desc(Snapshot.captured_at)).limit(limit)
     )
-    snapshots = snap_result.scalars().all()
+    snapshots = list(reversed(snap_result.scalars().all()))
     requested_metrics = [m.strip() for m in metrics.split(",")]
     series_map: dict[str, list] = {m: [] for m in requested_metrics}
     for snap in snapshots:
