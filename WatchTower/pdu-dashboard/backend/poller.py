@@ -18,7 +18,7 @@ from typing import Dict, Optional
 import httpx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
-from sqlalchemy import select
+from sqlalchemy import select, delete, desc
 
 from .database import AsyncSessionLocal
 from .database import PDUConfig as PDUConfigModel
@@ -44,6 +44,10 @@ SCRAPE_TIMEOUT_SECONDS = 60.0
 # max_keepalive_connections: idle connections kept warm for reuse
 MAX_CONNECTIONS = 200
 MAX_KEEPALIVE_CONNECTIONS = 100
+
+# Maximum number of snapshots to retain per PDU.
+# Older snapshots are automatically deleted after each successful poll.
+MAX_SNAPSHOTS_PER_PDU = 100
 
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -205,6 +209,22 @@ async def scrape_pdu(pdu_config_id: int):
 
             await db.commit()
             logger.info("Scraped PDU %s — snapshot id %s", config.name, snapshot.id)
+
+            # ── Retention: delete old snapshots beyond MAX_SNAPSHOTS_PER_PDU ──
+            count_result = await db.execute(
+                select(Snapshot.id)
+                .where(Snapshot.pdu_config_id == config.id)
+                .order_by(desc(Snapshot.captured_at))
+                .offset(MAX_SNAPSHOTS_PER_PDU)
+            )
+            old_ids = [row[0] for row in count_result.fetchall()]
+            if old_ids:
+                await db.execute(
+                    delete(Snapshot).where(Snapshot.id.in_(old_ids))
+                )
+                await db.commit()
+                logger.info("Pruned %d old snapshots for PDU %s (keeping %d)",
+                            len(old_ids), config.name, MAX_SNAPSHOTS_PER_PDU)
 
 
 def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
