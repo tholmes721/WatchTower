@@ -125,16 +125,20 @@ async def scrape_pdu(pdu_config_id: int):
     sem = _get_semaphore()
 
     async with sem:
-        # Log when a scrape starts — useful for diagnosing queue depth
-        logger.debug("Scrape slot acquired for PDU config %d (sem: %d/%d in use)",
-                     pdu_config_id, MAX_CONCURRENT_SCRAPES - sem._value, MAX_CONCURRENT_SCRAPES)
+        # Log when a scrape starts
+        logger.info("Scraping PDU config %d (slots in use: %d/%d)",
+                    pdu_config_id, MAX_CONCURRENT_SCRAPES - sem._value, MAX_CONCURRENT_SCRAPES)
 
         async with AsyncSessionLocal() as db:
             result = await db.execute(
                 select(PDUConfigModel).where(PDUConfigModel.id == pdu_config_id)
             )
             config = result.scalar_one_or_none()
-            if config is None or not config.polling_enabled:
+            if config is None:
+                logger.warning("PDU config %d no longer exists, skipping scrape", pdu_config_id)
+                return
+            if not config.polling_enabled:
+                logger.debug("PDU %s polling disabled, skipping scrape", config.name)
                 return
 
             url = get_metrics_url(config)
@@ -266,9 +270,18 @@ async def reload_all_schedules():
     async with AsyncSessionLocal() as db:
         result = await db.execute(select(PDUConfigModel))
         configs = result.scalars().all()
+        enabled_count = 0
         for config in configs:
             schedule_pdu(config)
+            if config.polling_enabled:
+                enabled_count += 1
     logger.info(
-        "Loaded %d PDU schedules (max concurrent: %d, timeout: %ds)",
-        len(_job_map), MAX_CONCURRENT_SCRAPES, SCRAPE_TIMEOUT_SECONDS
+        "Loaded %d PDU schedules (%d enabled, max concurrent: %d, timeout: %ds)",
+        len(configs), enabled_count, MAX_CONCURRENT_SCRAPES, SCRAPE_TIMEOUT_SECONDS
     )
+    # Log the next few scheduled jobs for verification
+    jobs = scheduler.get_jobs()
+    if jobs:
+        next_jobs = sorted(jobs, key=lambda j: j.next_run_time or datetime.max)[:5]
+        for job in next_jobs:
+            logger.info("  Next scheduled: %s at %s", job.id, job.next_run_time)
