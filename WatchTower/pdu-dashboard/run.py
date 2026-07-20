@@ -8,12 +8,6 @@ accessible from any valid IP address on this system.
 import sys
 import os
 
-# Windows fix: APScheduler's AsyncIOScheduler requires SelectorEventLoop.
-# Without this, scheduled jobs silently never fire on Windows.
-if sys.platform == "win32":
-    import asyncio
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
 import uvicorn
 
 if __name__ == "__main__":

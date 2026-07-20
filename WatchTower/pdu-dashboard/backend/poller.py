@@ -248,8 +248,10 @@ def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
             # First poll fires immediately, then regular interval after that
             first_run = datetime.utcnow() + timedelta(seconds=2)  # 2s grace for DB commit
         else:
-            # Stagger offset distributes PDUs across the interval window
-            offset_seconds = _stagger_offset(config.id, config.poll_interval_seconds)
+            # Stagger offset distributes PDUs across the first 60 seconds
+            # (capped to avoid long waits on startup with large intervals)
+            max_stagger = min(60, config.poll_interval_seconds)
+            offset_seconds = _stagger_offset(config.id, max_stagger)
             first_run = datetime.utcnow() + timedelta(seconds=offset_seconds)
 
         scheduler.add_job(
@@ -267,9 +269,9 @@ def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
         )
         _job_map[config.id] = job_id
         logger.info(
-            "Scheduled polling for PDU %s every %ss (first poll: %s, jitter: ±%ds)",
+            "Scheduled polling for PDU %s every %ss (first poll in %ds, jitter: ±%ds)",
             config.name, config.poll_interval_seconds,
-            "immediate" if immediate else f"staggered {_stagger_offset(config.id, config.poll_interval_seconds)}s",
+            int((first_run - datetime.utcnow()).total_seconds()),
             jitter
         )
     else:
@@ -305,3 +307,13 @@ async def reload_all_schedules():
         next_jobs = sorted(jobs, key=lambda j: j.next_run_time or datetime.max)[:5]
         for job in next_jobs:
             logger.info("  Next scheduled: %s at %s", job.id, job.next_run_time)
+    # Confirm event loop is alive by scheduling a one-shot verification
+    scheduler.add_job(
+        _verify_scheduler_running, id="_verify", replace_existing=True,
+        next_run_time=datetime.utcnow() + timedelta(seconds=5),
+    )
+
+
+async def _verify_scheduler_running():
+    """One-shot job that confirms the scheduler event loop is working."""
+    logger.info("Scheduler verification: event loop is alive and jobs are firing.")
