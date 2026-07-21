@@ -372,7 +372,10 @@ body {
   border-radius: 50%;
   background: var(--text-dim);
 }
-.poll-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+.poll-dot.poll-green { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 2s infinite; }
+.poll-dot.poll-yellow { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); animation: pulse 1.5s infinite; }
+.poll-dot.poll-red { background: var(--red); box-shadow: 0 0 6px var(--red); }
+.poll-dot.poll-waiting { background: var(--accent); animation: pulse 2s infinite; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }

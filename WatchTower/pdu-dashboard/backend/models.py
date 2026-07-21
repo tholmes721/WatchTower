@@ -178,6 +178,11 @@ class PDUDashboardSummary(BaseModel):
     exported_family_count: int = 0
     total_family_count: int = 0
     missing_families: List[str] = []
+    # Poll health status
+    poll_status: str = "unknown"            # 'green', 'yellow', 'red', 'unknown'
+    poll_last_success_at: Optional[datetime] = None
+    poll_consecutive_failures: int = 0
+    poll_last_error: str = ""
 
 
 class TrendPoint(BaseModel):

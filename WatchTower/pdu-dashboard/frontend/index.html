@@ -287,6 +287,18 @@
               <option value="500">Last 500</option>
             </select>
           </div>
+          <div class="form-group form-group-sm">
+            <label>Timezone</label>
+            <select id="trend-timezone">
+              <option value="UTC">UTC</option>
+              <option value="America/New_York" selected>Eastern (ET)</option>
+              <option value="America/Chicago">Central (CT)</option>
+              <option value="America/Denver">Mountain (MT)</option>
+              <option value="America/Los_Angeles">Pacific (PT)</option>
+              <option value="America/Anchorage">Alaska (AKT)</option>
+              <option value="Pacific/Honolulu">Hawaii (HT)</option>
+            </select>
+          </div>
           <button class="btn btn-primary" id="btn-load-trend">Load</button>
         </div>
         <div class="chart-wrap">

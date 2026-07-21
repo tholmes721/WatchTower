@@ -47,7 +47,7 @@ from .models import (
 )
 from .parser import parse_prometheus_text
 from .poller import reload_all_schedules, schedule_pdu, scrape_pdu, unschedule_pdu
-from .poller import start_polling, stop_polling, close_http_client
+from .poller import start_polling, stop_polling, close_http_client, get_all_poll_statuses
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -369,8 +369,16 @@ async def get_dashboard(user: User = Depends(require_auth), db: AsyncSession = D
     """Return a summary card for every configured PDU."""
     result = await db.execute(select(PDUConfigModel).order_by(PDUConfigModel.name))
     pdus = result.scalars().all()
+    poll_statuses = get_all_poll_statuses()
     summaries = []
     for pdu in pdus:
+        # Get poll health for this PDU
+        ps_health = poll_statuses.get(pdu.id)
+        poll_status_str = ps_health.status if ps_health else "unknown"
+        poll_last_success = ps_health.last_success_at if ps_health else None
+        poll_failures = ps_health.consecutive_failures if ps_health else 0
+        poll_error = ps_health.last_error if ps_health else ""
+
         snap_result = await db.execute(
             select(Snapshot).where(Snapshot.pdu_config_id == pdu.id).order_by(desc(Snapshot.captured_at)).limit(1)
         )
@@ -383,6 +391,8 @@ async def get_dashboard(user: User = Depends(require_auth), db: AsyncSession = D
                 total_apparent_power_va=None, total_current_a=None,
                 outlet_count=0, active_outlet_count=0,
                 alert_count_critical=0, alert_count_warning=0, alerts=[],
+                poll_status=poll_status_str, poll_last_success_at=poll_last_success,
+                poll_consecutive_failures=poll_failures, poll_last_error=poll_error,
             ))
             continue
         outlets = snap.outlet_metrics
@@ -420,6 +430,8 @@ async def get_dashboard(user: User = Depends(require_auth), db: AsyncSession = D
             alert_count_critical=critical, alert_count_warning=warning, alerts=alerts,
             exported_family_count=len(ps.exported_families & CORE_METRIC_FAMILIES),
             total_family_count=len(CORE_METRIC_FAMILIES), missing_families=missing,
+            poll_status=poll_status_str, poll_last_success_at=poll_last_success,
+            poll_consecutive_failures=poll_failures, poll_last_error=poll_error,
         ))
     return summaries
 

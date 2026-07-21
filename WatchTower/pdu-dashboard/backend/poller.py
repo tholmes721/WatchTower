@@ -2,20 +2,18 @@
 Background polling engine.
 Uses a simple asyncio task loop to periodically scrape each enabled PDU.
 
-Replaced APScheduler with native asyncio for compatibility with Python 3.12+
-where the asyncio policy system is deprecated and APScheduler's
-AsyncIOScheduler may fail to properly attach to the event loop.
-
 Scalability features (designed for 1000+ PDU environments):
 - Semaphore-based concurrency limiter prevents overwhelming the network
 - Staggered initial polling spreads PDUs across the first 60 seconds
 - Shared httpx client with connection pooling for efficiency
 - Extended timeouts for slow PDUs that take up to 30s to export metrics
+- Per-PDU health tracking (success/failure counts for status indicators)
 """
 
 import asyncio
 import hashlib
 import logging
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, Optional, Set
 
@@ -36,6 +34,8 @@ SCRAPE_TIMEOUT_SECONDS = 60.0
 MAX_CONNECTIONS = 200
 MAX_KEEPALIVE_CONNECTIONS = 100
 MAX_SNAPSHOTS_PER_PDU = 100
+# Number of consecutive failures before marking a PDU as "critical" (red)
+CONSECUTIVE_FAILURES_RED = 5
 # ─────────────────────────────────────────────────────────────────────────────
 
 # Semaphore limits concurrent scrapes
@@ -50,6 +50,46 @@ _polling_task: Optional[asyncio.Task] = None
 # Set of PDU config IDs that need an immediate poll (newly added)
 _immediate_poll_queue: Set[int] = set()
 
+
+# ── Poll health tracking ─────────────────────────────────────────────────────
+
+@dataclass
+class PollStatus:
+    """Tracks the health of polling for a single PDU."""
+    last_success_at: Optional[datetime] = None
+    last_attempt_at: Optional[datetime] = None
+    consecutive_failures: int = 0
+    last_error: str = ""
+
+    @property
+    def status(self) -> str:
+        """Return 'green', 'yellow', or 'red' based on poll health."""
+        if self.last_success_at is None and self.consecutive_failures == 0:
+            return "unknown"  # Never polled yet
+        if self.consecutive_failures >= CONSECUTIVE_FAILURES_RED:
+            return "red"
+        if self.consecutive_failures > 0:
+            return "yellow"
+        return "green"
+
+
+# Global poll status map: pdu_config_id -> PollStatus
+_poll_status: Dict[int, PollStatus] = {}
+
+
+def get_poll_status(pdu_config_id: int) -> PollStatus:
+    """Get the poll status for a PDU (creates if not exists)."""
+    if pdu_config_id not in _poll_status:
+        _poll_status[pdu_config_id] = PollStatus()
+    return _poll_status[pdu_config_id]
+
+
+def get_all_poll_statuses() -> Dict[int, PollStatus]:
+    """Return all poll statuses (for dashboard API)."""
+    return _poll_status
+
+
+# ── HTTP client / semaphore ──────────────────────────────────────────────────
 
 def _get_semaphore() -> asyncio.Semaphore:
     global _scrape_semaphore
@@ -94,10 +134,13 @@ def get_metrics_url(config: PDUConfigModel) -> str:
 async def scrape_pdu(pdu_config_id: int):
     """Fetch metrics from a single PDU and store as a new snapshot."""
     sem = _get_semaphore()
+    status = get_poll_status(pdu_config_id)
 
     async with sem:
         logger.info("Scraping PDU config %d (slots in use: %d/%d)",
                     pdu_config_id, MAX_CONCURRENT_SCRAPES - sem._value, MAX_CONCURRENT_SCRAPES)
+
+        status.last_attempt_at = datetime.utcnow()
 
         async with AsyncSessionLocal() as db:
             result = await db.execute(
@@ -121,16 +164,23 @@ async def scrape_pdu(pdu_config_id: int):
                 response.raise_for_status()
                 text = response.text
             except httpx.TimeoutException:
-                logger.warning("Timeout scraping PDU %s (%s) after %ds",
-                               config.name, url, SCRAPE_TIMEOUT_SECONDS)
+                status.consecutive_failures += 1
+                status.last_error = f"Timeout after {SCRAPE_TIMEOUT_SECONDS}s"
+                logger.warning("Timeout scraping PDU %s (%s) — failure #%d",
+                               config.name, url, status.consecutive_failures)
                 return
             except Exception as exc:
-                logger.error("Failed to scrape PDU %s (%s): %s", config.name, url, exc)
+                status.consecutive_failures += 1
+                status.last_error = str(exc)[:200]
+                logger.error("Failed to scrape PDU %s (%s): %s — failure #%d",
+                             config.name, url, exc, status.consecutive_failures)
                 return
 
             try:
                 parsed = parse_prometheus_text(text)
             except Exception as exc:
+                status.consecutive_failures += 1
+                status.last_error = f"Parse error: {exc}"
                 logger.error("Failed to parse metrics from PDU %s: %s", config.name, exc)
                 return
 
@@ -171,9 +221,14 @@ async def scrape_pdu(pdu_config_id: int):
                 config.updated_at = datetime.utcnow()
 
             await db.commit()
+
+            # Mark success
+            status.last_success_at = datetime.utcnow()
+            status.consecutive_failures = 0
+            status.last_error = ""
             logger.info("Scraped PDU %s — snapshot id %s", config.name, snapshot.id)
 
-            # Retention: delete old snapshots beyond MAX_SNAPSHOTS_PER_PDU
+            # Retention: delete old snapshots
             count_result = await db.execute(
                 select(Snapshot.id)
                 .where(Snapshot.pdu_config_id == config.id)
@@ -193,21 +248,15 @@ async def scrape_pdu(pdu_config_id: int):
 # ── Background polling loop ──────────────────────────────────────────────────
 
 async def _polling_loop():
-    """
-    Main background loop that runs forever.
-    Every 30 seconds, checks which PDUs are due for a poll and scrapes them.
-    """
+    """Main background loop. Checks every 15s which PDUs are due for polling."""
     logger.info("Background polling loop started.")
 
-    # Track last poll time per PDU
     last_polled: Dict[int, datetime] = {}
-
-    # Initial stagger: spread first polls across 60 seconds
     startup_time = datetime.utcnow()
 
     while True:
         try:
-            # Process immediate poll queue first (newly added PDUs)
+            # Process immediate poll queue first
             immediate_ids = list(_immediate_poll_queue)
             _immediate_poll_queue.clear()
             if immediate_ids:
@@ -227,25 +276,22 @@ async def _polling_loop():
             due_for_poll = []
 
             for config in configs:
-                # Skip if already handled as immediate
                 if config.id in immediate_ids:
                     continue
 
                 last = last_polled.get(config.id)
                 if last is None:
-                    # Never polled — apply stagger offset (max 60s from startup)
+                    # Never polled — apply stagger (max 60s)
                     h = hashlib.md5(str(config.id).encode()).hexdigest()
                     offset = int(h[:8], 16) % 60
                     stagger_until = startup_time + timedelta(seconds=offset)
                     if now >= stagger_until:
                         due_for_poll.append(config.id)
                 else:
-                    # Check if interval has elapsed
                     elapsed = (now - last).total_seconds()
                     if elapsed >= config.poll_interval_seconds:
                         due_for_poll.append(config.id)
 
-            # Fire all due polls concurrently (semaphore limits actual concurrency)
             if due_for_poll:
                 logger.info("Polling %d PDUs this cycle", len(due_for_poll))
                 tasks = [asyncio.create_task(scrape_pdu(pid)) for pid in due_for_poll]
@@ -256,17 +302,13 @@ async def _polling_loop():
         except Exception as exc:
             logger.error("Error in polling loop: %s", exc)
 
-        # Check every 15 seconds
         await asyncio.sleep(15)
 
 
-# ── Public API (called from main.py) ─────────────────────────────────────────
+# ── Public API ───────────────────────────────────────────────────────────────
 
 def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
-    """
-    Mark a PDU for polling. If immediate=True, it will be polled on the
-    next loop cycle (within ~15 seconds).
-    """
+    """Mark a PDU for polling."""
     if config.polling_enabled and immediate:
         _immediate_poll_queue.add(config.id)
         logger.info("Queued immediate poll for PDU %s", config.name)
@@ -277,12 +319,10 @@ def schedule_pdu(config: PDUConfigModel, immediate: bool = False):
 
 
 def unschedule_pdu(pdu_config_id: int):
-    """Remove a PDU from the immediate queue (if present)."""
     _immediate_poll_queue.discard(pdu_config_id)
 
 
 def start_polling():
-    """Start the background polling task. Call from app startup."""
     global _polling_task
     _polling_task = asyncio.create_task(_polling_loop())
     logger.info("Polling engine started (max concurrent: %d, timeout: %ds)",
@@ -290,7 +330,6 @@ def start_polling():
 
 
 def stop_polling():
-    """Stop the background polling task. Call from app shutdown."""
     global _polling_task
     if _polling_task and not _polling_task.done():
         _polling_task.cancel()

@@ -204,9 +204,21 @@ function renderPduCard(d) {
     ? `<span class="badge badge-offline" title="Limited export: ${d.missing_families.length} metric families not available on this device">⚠ ${capPct}% export</span>`
     : '';
 
-  const pollHtml = d.polling_enabled
-    ? `<span class="poll-dot active"></span>Polling`
-    : `<span class="poll-dot"></span>Manual`;
+  let pollHtml;
+  if (!d.polling_enabled) {
+    pollHtml = `<span class="poll-dot"></span>Manual`;
+  } else if (d.poll_status === 'green') {
+    const ago = d.poll_last_success_at ? timeAgo(d.poll_last_success_at) : '';
+    pollHtml = `<span class="poll-dot poll-green"></span>Polling OK${ago ? ' · ' + ago : ''}`;
+  } else if (d.poll_status === 'yellow') {
+    pollHtml = `<span class="poll-dot poll-yellow"></span>Last poll failed` +
+      (d.poll_last_success_at ? ` · Last OK: ${timeAgo(d.poll_last_success_at)}` : '');
+  } else if (d.poll_status === 'red') {
+    pollHtml = `<span class="poll-dot poll-red"></span>${d.poll_consecutive_failures}× failed` +
+      (d.poll_last_success_at ? ` · Last OK: ${timeAgo(d.poll_last_success_at)}` : ' · Never succeeded');
+  } else {
+    pollHtml = `<span class="poll-dot poll-waiting"></span>Waiting for first poll`;
+  }
 
   const lastSeen = d.last_snapshot_at
     ? timeAgo(d.last_snapshot_at)
@@ -644,13 +656,14 @@ function renderTrendChart(data, metric) {
     return;
   }
 
+  const tz = document.getElementById('trend-timezone').value;
   const palette = ['#4f8ef7', '#36d399', '#fbbd23', '#f87272', '#a855f7', '#f97316'];
   const isTemp = metric === 'peripheral_temperature_degreecelsius';
   const datasets = data.series.map((s, i) => ({
     label: metricLabel(s.metric),
     data: s.points.map(p => ({
       x: new Date(p.captured_at).getTime(),
-      y: isTemp ? (p.value * 9/5 + 32) : p.value,  // Convert °C to °F for display
+      y: isTemp ? (p.value * 9/5 + 32) : p.value,
     })),
     borderColor: palette[i % palette.length],
     backgroundColor: palette[i % palette.length] + '22',
@@ -659,6 +672,11 @@ function renderTrendChart(data, metric) {
     tension: 0.3,
     fill: false,
   }));
+
+  // Get timezone short name for axis label
+  const tzShortName = tz === 'UTC' ? 'UTC' :
+    new Intl.DateTimeFormat('en-US', { timeZone: tz, timeZoneName: 'short' })
+      .formatToParts(new Date()).find(p => p.type === 'timeZoneName')?.value || tz;
 
   state.trendChart = new Chart(ctx, {
     type: 'line',
@@ -670,8 +688,18 @@ function renderTrendChart(data, metric) {
         x: {
           type: 'time',
           time: { tooltipFormat: 'MMM d, HH:mm' },
-          ticks: { color: '#8892b0', maxRotation: 0 },
+          ticks: {
+            color: '#8892b0',
+            maxRotation: 0,
+            callback: function(value) {
+              const d = new Date(value);
+              return d.toLocaleTimeString('en-US', {
+                timeZone: tz, hour: '2-digit', minute: '2-digit', hour12: false
+              });
+            }
+          },
           grid: { color: '#2e3348' },
+          title: { display: true, text: tzShortName, color: '#8892b0', font: { size: 11 } },
         },
         y: {
           ticks: { color: '#8892b0' },
@@ -683,6 +711,14 @@ function renderTrendChart(data, metric) {
         legend: { labels: { color: '#e2e6f0' } },
         tooltip: {
           callbacks: {
+            title: (items) => {
+              if (!items.length) return '';
+              const d = new Date(items[0].parsed.x);
+              return d.toLocaleString('en-US', {
+                timeZone: tz, month: 'short', day: 'numeric',
+                hour: '2-digit', minute: '2-digit', hour12: true
+              }) + ' ' + tzShortName;
+            },
             label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y.toFixed(2)} ${metricUnit(metric)}`,
           },
         },
