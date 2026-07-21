@@ -687,7 +687,7 @@ function renderTrendChart(data, metric) {
       scales: {
         x: {
           type: 'time',
-          time: { tooltipFormat: 'MMM d, HH:mm' },
+          time: {},
           ticks: {
             color: '#8892b0',
             maxRotation: 0,
