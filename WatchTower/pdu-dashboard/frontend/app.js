@@ -1281,8 +1281,16 @@ function fmt(val, decimals, unit) {
 }
 
 function timeAgo(isoStr) {
-  const diff = Date.now() - new Date(isoStr).getTime();
+  if (!isoStr) return '';
+  // Backend sends UTC timestamps — ensure they're parsed as UTC
+  // (append 'Z' if no timezone indicator present)
+  let str = String(isoStr);
+  if (!str.endsWith('Z') && !str.includes('+') && !str.includes('-', 10)) {
+    str += 'Z';
+  }
+  const diff = Date.now() - new Date(str).getTime();
   const s = Math.floor(diff / 1000);
+  if (s < 0) return 'just now';
   if (s < 60)  return `${s}s ago`;
   if (s < 3600) return `${Math.floor(s/60)}m ago`;
   if (s < 86400) return `${Math.floor(s/3600)}h ago`;
