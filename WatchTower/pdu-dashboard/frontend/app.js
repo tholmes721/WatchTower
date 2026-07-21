@@ -662,7 +662,7 @@ function renderTrendChart(data, metric) {
   const datasets = data.series.map((s, i) => ({
     label: metricLabel(s.metric),
     data: s.points.map(p => ({
-      x: new Date(p.captured_at).getTime(),
+      x: new Date(p.captured_at.endsWith('Z') ? p.captured_at : p.captured_at + 'Z').getTime(),
       y: isTemp ? (p.value * 9/5 + 32) : p.value,
     })),
     borderColor: palette[i % palette.length],
